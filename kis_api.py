@@ -10,6 +10,7 @@ kis_api.py  –  한국투자증권 REST API 래퍼
 import os, time, json, logging, requests
 from datetime import datetime, timedelta
 from pathlib import Path
+import pandas as pd
 import config
 
 logger = logging.getLogger(__name__)
@@ -360,6 +361,9 @@ def get_current_price(stock_code: str) -> dict:
             "change":   int(o.get("prdy_vrss", 0)),
             "change_r": float(o.get("prdy_ctrt", 0)),
             "volume":   int(o.get("acml_vol", 0)),
+            "w52_high": _int(o.get("w52_hgpr", 0)) or None,
+            "w52_low":  _int(o.get("w52_lwpr", 0)) or None,
+            "mkt_cap":  _int(o.get("hts_avls", 0)) or None,  # 시가총액 (억원)
         }
     except Exception as e:
         logger.error("현재가 조회 실패: %s", e)
@@ -742,4 +746,261 @@ def get_valuation_ratio(stock_code: str, div: str = "0") -> list[dict]:
         return []
 
 
+# ══════════════════════════════════════════════════════════════
+#  선행 컨센서스 PER
+#  TR: FHKST01010700  endpoint: search-stock-info
+# ══════════════════════════════════════════════════════════════
+def get_forward_per(stock_code: str) -> float | None:
+    """
+    네이버 금융 주요 재무정보 표에서 선행 컨센서스 PER 크롤링.
+    https://finance.naver.com/item/main.naver?code={code}
+    표 구조: row[1]=항목명, row[2..5]=연도별(마지막 2열이 추정치E).
+    반환: float or None
+    """
+    url = f"https://finance.naver.com/item/main.naver?code={stock_code}"
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+    try:
+        resp = requests.get(url, headers=headers, timeout=10)
+        resp.raise_for_status()
+        import io as _io
+        html = resp.content.decode("utf-8", errors="replace")
+        tables = pd.read_html(_io.StringIO(html))
+        for tbl in tables:
+            tbl_str = tbl.to_string()
+            if "PER" not in tbl_str or "당기순이익" not in tbl_str:
+                continue
+            for row in tbl.to_records():
+                label = str(row[1])
+                if "PER" not in label or "PBR" in label:
+                    continue
+                # row[5]=최신 추정치(E), row[4]=직전 추정치 또는 실적
+                for col_idx in (5, 4, 3):
+                    try:
+                        raw = str(row[col_idx]).replace(",", "").strip()
+                        if raw in ("nan", "-", "NaN", "") or not any(c.isdigit() for c in raw):
+                            continue
+                        val = float(raw)
+                        if val > 0:
+                            logger.info("[naver_per] %s → col=%d val=%.1f", stock_code, col_idx, val)
+                            return round(val, 1)
+                    except (IndexError, ValueError):
+                        continue
+        logger.warning("[naver_per] %s: PER 행을 찾지 못함", stock_code)
+        return None
+    except Exception as e:
+        logger.error("[naver_per] 실패: %s", e)
+        return None
 
+
+# ══════════════════════════════════════════════════════════════
+#  배당 이력 (연간, 최대 8년)
+#  1차: FHKST66430200 (손익계산서) — per_sto_dvdn 필드 시도
+#  2차: FHKST66430300 (재무비율)   — dvd_yld, dvd_pyrt 필드 시도
+#  DPS 미확보 시 DART get_dividend_per_share fallback
+# ══════════════════════════════════════════════════════════════
+def get_dividend_history(stock_code: str) -> list[dict]:
+    """
+    연간 배당 이력 반환 (최대 10년).
+    반환: [{"year", "dps", "dividend_yield", "payout_ratio"}, ...]  오래된 순
+    - DPS: FHKST66430200 시도 → DART fallback
+    - dvd_yld: FHKST66430300 시도 → 없으면 DPS ÷ 연말 종가 계산
+    - dvd_pyrt: FHKST66430300 시도 → 없으면 DPS ÷ EPS 계산
+    """
+    result_map: dict[str, dict] = {}
+
+    def _entry(year):
+        if year not in result_map:
+            result_map[year] = {"year": year, "dps": None, "dividend_yield": None, "payout_ratio": None}
+        return result_map[year]
+
+    # ── 1. FHKST66430200 (손익계산서) — DPS 시도 ─────────────────
+    url_is = f"{BASE_URL}/uapi/domestic-stock/v1/finance/income-statement"
+    params_is = {"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": stock_code, "FID_DIV_CLS_CODE": "0"}
+    try:
+        resp = requests.get(url_is, headers=_headers("FHKST66430200"), params=params_is, timeout=10)
+        resp.raise_for_status()
+        body = resp.json()
+        if body.get("rt_cd") == "0":
+            rows = body.get("output") or []
+            dps_found = False
+            for r in rows:
+                period = r.get("stac_yymm", "")
+                if not period:
+                    continue
+                dps = _float(r.get("per_sto_dvdn")) or None
+                if dps:
+                    dps_found = True
+                    _entry(period[:4])["dps"] = dps
+                else:
+                    _entry(period[:4])
+            print(f"[dividend] FHKST66430200: {len(rows)}건, DPS={'있음' if dps_found else '없음'}")
+        else:
+            print(f"[dividend] FHKST66430200 오류: {body.get('msg1')}")
+    except Exception as e:
+        print(f"[dividend] FHKST66430200 실패: {e}")
+
+    time.sleep(0.3)
+
+    # ── 2. FHKST66430300 (재무비율) — dvd_yld, dvd_pyrt ─────────
+    url_fr = f"{BASE_URL}/uapi/domestic-stock/v1/finance/financial-ratio"
+    params_fr = {"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": stock_code, "FID_DIV_CLS_CODE": "0"}
+    try:
+        resp = requests.get(url_fr, headers=_headers("FHKST66430300"), params=params_fr, timeout=10)
+        resp.raise_for_status()
+        body = resp.json()
+        if body.get("rt_cd") == "0":
+            rows = body.get("output") or []
+            dvd_found = False
+            for r in rows:
+                period = r.get("stac_yymm", "")
+                if not period:
+                    continue
+                dyld  = _float(r.get("dvd_yld"))  or None
+                dpyrt = _float(r.get("dvd_pyrt")) or None
+                if dyld or dpyrt:
+                    dvd_found = True
+                e = _entry(period[:4])
+                if dyld:
+                    e["dividend_yield"] = dyld
+                if dpyrt:
+                    e["payout_ratio"]   = dpyrt
+            print(f"[dividend] FHKST66430300: {len(rows)}건, dvd_yld/dvd_pyrt={'있음' if dvd_found else '없음'}")
+        else:
+            print(f"[dividend] FHKST66430300 오류: {body.get('msg1')}")
+    except Exception as e:
+        print(f"[dividend] FHKST66430300 실패: {e}")
+
+    # ── 3. DPS 미확보 시 DART fallback ───────────────────────────
+    if not any(v["dps"] for v in result_map.values()):
+        try:
+            import dart_api as _dart
+            dps_map = _dart.get_dividend_per_share(stock_code)
+            print(f"[dividend] DART DPS fallback: {dps_map}")
+            for year, dps in dps_map.items():
+                _entry(year)["dps"] = dps
+        except Exception as e:
+            print(f"[dividend] DART fallback 실패: {e}")
+
+    # ── 4. 연말 종가로 배당수익률 보완 ────────────────────────────
+    missing_yld = [y for y, v in result_map.items() if v["dps"] and not v["dividend_yield"]]
+    if missing_yld:
+        try:
+            today = datetime.today().strftime("%Y%m%d")
+            start = f"{min(missing_yld)}0101"
+            prices = get_price_history(stock_code, start, today, period="Y")
+            price_by_year = {p["date"][:4]: p["close"] for p in prices if p["close"]}
+            for year in missing_yld:
+                px = price_by_year.get(year)
+                dps = result_map[year]["dps"]
+                if px and dps:
+                    result_map[year]["dividend_yield"] = round(dps / px * 100, 2)
+            print(f"[dividend] 수익률 보완: {missing_yld} / price_by_year={price_by_year}")
+        except Exception as e:
+            print(f"[dividend] 수익률 계산 실패: {e}")
+
+    # ── 5. EPS로 배당성향 보완 ────────────────────────────────────
+    missing_pyr = [y for y, v in result_map.items() if v["dps"] and not v["payout_ratio"]]
+    if missing_pyr:
+        try:
+            val_data = get_valuation_ratio(stock_code, div="0")
+            eps_by_year = {d["stac_yymm"][:4]: d["eps"] for d in val_data if d.get("eps")}
+            for year in missing_pyr:
+                eps = eps_by_year.get(year)
+                dps = result_map[year]["dps"]
+                if eps and eps > 0 and dps:
+                    result_map[year]["payout_ratio"] = round(dps / eps * 100, 1)
+            print(f"[dividend] 배당성향 보완: {missing_pyr} / eps_by_year={eps_by_year}")
+        except Exception as e:
+            print(f"[dividend] 배당성향 계산 실패: {e}")
+
+    result = sorted(result_map.values(), key=lambda x: x["year"])
+    return result[-10:]
+
+
+# ══════════════════════════════════════════════════════════════
+#  가치투자 요약 지표 집계
+# ══════════════════════════════════════════════════════════════
+def get_summary_data(stock_code: str) -> dict:
+    """
+    기존 함수를 조합해 가치투자 핵심 지표를 단일 dict로 반환.
+    서브 호출 실패 시 해당 필드 None 처리.
+    반환 필드: price, change_r, per, pbr, roe, debt_ratio, op_margin, w52_pos
+    """
+    result = {
+        "price":       None,
+        "change_r":    None,
+        "per":         None,
+        "forward_per": None,
+        "pbr":         None,
+        "roe":         None,
+        "debt_ratio":  None,
+        "op_margin":   None,
+        "w52_pos":     None,
+        "mkt_cap":     None,  # 시가총액 (억원)
+    }
+
+    # 현재가 + 52주 고/저
+    try:
+        p = get_current_price(stock_code)
+        result["price"]    = p.get("price") or None
+        result["change_r"] = p.get("change_r")
+        result["mkt_cap"] = p.get("mkt_cap")
+        high = p.get("w52_high")
+        low  = p.get("w52_low")
+        price = result["price"]
+        if price and high and low and high > low:
+            result["w52_pos"] = round((price - low) / (high - low) * 100, 1)
+    except Exception as e:
+        logger.warning("[summary] 현재가 실패: %s", e)
+
+    time.sleep(0.3)
+
+    # PER / PBR (현재가 ÷ EPS·BPS, 연간 최신)
+    try:
+        val = get_valuation_ratio(stock_code, div="0")
+        if val:
+            latest = val[-1]
+            eps = latest.get("eps")
+            bps = latest.get("bps")
+            price = result["price"]
+            if price and eps and eps > 0:
+                result["per"] = round(price / eps, 1)
+            if price and bps and bps > 0:
+                result["pbr"] = round(price / bps, 2)
+    except Exception as e:
+        logger.warning("[summary] 밸류에이션 실패: %s", e)
+
+    time.sleep(0.3)
+
+    # ROE / 부채비율 (연간 최신)
+    try:
+        ratio = get_financial_ratio(stock_code, div="0")
+        if ratio:
+            latest = ratio[-1]
+            result["roe"]        = latest.get("roe")
+            result["debt_ratio"] = latest.get("debt_ratio")
+    except Exception as e:
+        logger.warning("[summary] 재무비율 실패: %s", e)
+
+    time.sleep(0.3)
+
+    # 영업이익률 (연간 최신)
+    try:
+        inc = get_income_statement(stock_code, div="0")
+        if inc:
+            latest = inc[-1]
+            sales = latest.get("sales")
+            op    = latest.get("op_income")
+            if sales and sales != 0:
+                result["op_margin"] = round(op / sales * 100, 1)
+    except Exception as e:
+        logger.warning("[summary] 손익계산서 실패: %s", e)
+
+    # 선행 컨센서스 PER (네이버 금융)
+    try:
+        result["forward_per"] = get_forward_per(stock_code)
+    except Exception as e:
+        logger.warning("[summary] forward_per 실패: %s", e)
+
+    logger.info("[summary] %s → %s", stock_code, result)
+    return result

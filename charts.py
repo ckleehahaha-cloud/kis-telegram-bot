@@ -6,7 +6,7 @@ import matplotlib.font_manager as _fm
 import matplotlib.ticker as mticker
 import matplotlib.dates as mdates
 from matplotlib.gridspec import GridSpec
-from matplotlib.patches import Patch
+from matplotlib.patches import Patch, FancyBboxPatch
 import numpy as np
 from datetime import datetime
 import config
@@ -903,4 +903,255 @@ def chart_valuation(annual: list, name: str):
     _draw_panel(axes[2], annual, "dps", "DPS (원)", "#FDCB6E", is_annual=True)
 
     fig.subplots_adjust(top=0.92, hspace=0.5)
+    return _buf()
+
+
+def chart_summary(data: dict, name: str) -> io.BytesIO:
+    """
+    가치투자 요약 카드 — 600×400px 단일 이미지.
+    Header: 종목명 | 현재가 (등락률)
+    2×3 metric grid: PER / PBR / ROE / 부채비율 / 영업이익률 / 52주위치
+    Footer: 조회시각
+    """
+    BG     = "#1A1A2E"
+    BOX_BG = "#16213E"
+    BORDER = "#2C3E6B"
+    GRAY   = "#888888"
+    WHITE  = "#FFFFFF"
+    GREEN  = "#2ECC71"
+    RED    = "#E74C3C"
+
+    fig = plt.figure(figsize=(6, 4), dpi=100)
+    fig.patch.set_facecolor(BG)
+    ax = fig.add_axes([0, 0, 1, 1])
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1)
+    ax.axis("off")
+    ax.set_facecolor(BG)
+
+    # ── Header ────────────────────────────────────────────────
+    price    = data.get("price")
+    change_r = data.get("change_r")
+
+    price_str = f"{price:,}원" if price else "N/A"
+    if change_r is not None:
+        sign      = "+" if change_r >= 0 else ""
+        chg_color = GREEN if change_r >= 0 else RED
+        chg_str   = f"{sign}{change_r:.2f}%"
+    else:
+        chg_color = GRAY
+        chg_str   = "N/A"
+
+    ax.text(0.04, 0.90, name,
+            color=WHITE, fontsize=14, fontweight="bold",
+            va="center", ha="left", transform=ax.transAxes)
+    ax.text(0.96, 0.90, price_str,
+            color=WHITE, fontsize=13, fontweight="bold",
+            va="center", ha="right", transform=ax.transAxes)
+    ax.text(0.96, 0.83, f"({chg_str})",
+            color=chg_color, fontsize=9,
+            va="center", ha="right", transform=ax.transAxes)
+
+    # divider
+    ax.plot([0.03, 0.97], [0.79, 0.79], color=BORDER, linewidth=0.8,
+            transform=ax.transAxes)
+
+    # ── Color rules ───────────────────────────────────────────
+    def _color(key, val):
+        if val is None:
+            return GRAY
+        rules = {
+            "per":        (lambda v: GREEN if 0 < v <= 15 else (RED if v > 25 else WHITE)),
+            "pbr":        (lambda v: GREEN if v <= 1 else (RED if v > 3 else WHITE)),
+            "roe":        (lambda v: GREEN if v >= 15 else (RED if v < 5 else WHITE)),
+            "debt_ratio": (lambda v: GREEN if v <= 100 else (RED if v > 200 else WHITE)),
+            "op_margin":  (lambda v: GREEN if v >= 10 else (RED if v < 0 else WHITE)),
+        }
+        return rules[key](val) if key in rules else WHITE
+
+    def _fmt(key, val):
+        if val is None:
+            return "N/A"
+        if key == "per":
+            return f"{val:.1f}x"
+        if key == "pbr":
+            return f"{val:.2f}x"
+        return f"{val:.1f}%"
+
+    metrics = [
+        ("PER",       "per",        data.get("per")),
+        ("PBR",       "pbr",        data.get("pbr")),
+        ("ROE",       "roe",        data.get("roe")),
+        ("부채비율",   "debt_ratio", data.get("debt_ratio")),
+        ("영업이익률", "op_margin",  data.get("op_margin")),
+        ("52주 위치",  "w52_pos",   data.get("w52_pos")),
+    ]
+
+    # Grid geometry: 2 rows × 3 cols
+    # x: [0.02, 0.35, 0.68], col_w=0.30, gap=0.03
+    # y: row0 bottom=0.45, row1 bottom=0.13, row_h=0.30, gap=0.04
+    COL_XS = [0.02, 0.35, 0.68]
+    COL_W  = 0.30
+    ROW_YS = [0.45, 0.13]
+    ROW_H  = 0.30
+
+    for idx, (label, key, val) in enumerate(metrics):
+        row = idx // 3
+        col = idx % 3
+        x0  = COL_XS[col]
+        y0  = ROW_YS[row]
+
+        box = FancyBboxPatch(
+            (x0, y0), COL_W, ROW_H,
+            boxstyle="round,pad=0.015",
+            facecolor=BOX_BG, edgecolor=BORDER,
+            linewidth=0.8, transform=ax.transAxes, clip_on=False,
+        )
+        ax.add_patch(box)
+
+        # label (top-left of box)
+        ax.text(x0 + 0.016, y0 + ROW_H - 0.03, label,
+                color=GRAY, fontsize=7.5, va="top", ha="left",
+                transform=ax.transAxes)
+
+        # value (center of box)
+        ax.text(x0 + COL_W / 2, y0 + ROW_H / 2 - 0.01,
+                _fmt(key, val),
+                color=_color(key, val), fontsize=13, fontweight="bold",
+                va="center", ha="center", transform=ax.transAxes)
+
+    # ── Footer ────────────────────────────────────────────────
+    ax.text(0.5, 0.06,
+            datetime.now().strftime("%Y-%m-%d %H:%M 기준"),
+            color=GRAY, fontsize=7.5, va="center", ha="center",
+            transform=ax.transAxes)
+
+    buf = io.BytesIO()
+    plt.savefig(buf, format="png", bbox_inches=None, dpi=100)
+    plt.close("all")
+    buf.seek(0)
+    return buf
+
+
+def chart_dividend(data: list, name: str, current_price: float) -> io.BytesIO:
+    """
+    배당 이력 3패널 (연간):
+      1. DPS 막대 (원)
+      2. 배당수익률 라인 (%)
+      3. 배당성향 막대 (%)
+    데이터 없는 패널은 "데이터 없음" 텍스트 표시.
+    """
+    if not data:
+        return _empty_chart("배당 데이터 없음", f"[배당이력] {name}")
+
+    BG     = "#1A1A2E"
+    AX_BG  = "#16213E"
+    GOLD   = "#FDCB6E"
+    GREEN  = "#2ECC71"
+    BLUE   = "#3498DB"
+    GRAY   = "#888888"
+    WHITE  = "#FFFFFF"
+
+    years     = [d["year"] for d in data]
+    dps_vals  = [d["dps"]            for d in data]
+    yld_vals  = [d["dividend_yield"] for d in data]
+    pay_vals  = [d["payout_ratio"]   for d in data]
+
+    # 현재가 기준 최신 배당수익률 보완 (API에 yield 없고 DPS 있을 때)
+    if dps_vals and any(v is not None for v in dps_vals) and current_price:
+        latest_dps = next((v for v in reversed(dps_vals) if v is not None), None)
+        if latest_dps and all(v is None for v in yld_vals):
+            yld_vals[-1] = round(latest_dps / current_price * 100, 2)
+
+    def _has(vals):
+        return any(v is not None for v in vals)
+
+    def _no_data(ax, label):
+        ax.set_facecolor(AX_BG)
+        ax.text(0.5, 0.5, "데이터 없음", color=GRAY, fontsize=11,
+                ha="center", va="center", transform=ax.transAxes)
+        ax.set_title(label, color=WHITE, fontsize=10, pad=6)
+        ax.tick_params(colors=GRAY)
+        for sp in ax.spines.values():
+            sp.set_edgecolor("#334466")
+
+    fig, axes = plt.subplots(3, 1, figsize=(12, 11),
+                             facecolor=BG,
+                             gridspec_kw={"hspace": 0.45})
+
+    x = np.arange(len(years))
+
+    # ── 패널 1: DPS ──────────────────────────────────────────────
+    ax1 = axes[0]
+    ax1.set_facecolor(AX_BG)
+    ax1.set_title(f"[{name}] 주당배당금 (DPS)", color=WHITE, fontsize=11, pad=6)
+    if _has(dps_vals):
+        bars = [v if v is not None else 0 for v in dps_vals]
+        ax1.bar(x, bars, color=GOLD, alpha=0.85, width=0.6)
+        for i, v in enumerate(dps_vals):
+            if v is not None and v > 0:
+                ax1.text(i, v + max(bars) * 0.02, f"{v:,.0f}",
+                         ha="center", va="bottom", color=WHITE, fontsize=8)
+        ax1.set_ylabel("원", color=GRAY, fontsize=9)
+    else:
+        _no_data(ax1, f"[{name}] 주당배당금 (DPS)")
+        axes[0] = ax1
+
+    ax1.set_xticks(x)
+    ax1.set_xticklabels(years, color=GRAY, fontsize=9)
+    ax1.tick_params(colors=GRAY)
+    ax1.yaxis.label.set_color(GRAY)
+    for sp in ax1.spines.values():
+        sp.set_edgecolor("#334466")
+    ax1.yaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: f"{v:,.0f}"))
+
+    # ── 패널 2: 배당수익률 ──────────────────────────────────────────
+    ax2 = axes[1]
+    ax2.set_facecolor(AX_BG)
+    ax2.set_title("배당수익률 (%)", color=WHITE, fontsize=11, pad=6)
+    if _has(yld_vals):
+        valid_x = [i for i, v in enumerate(yld_vals) if v is not None]
+        valid_y = [yld_vals[i] for i in valid_x]
+        ax2.plot(valid_x, valid_y, color=GREEN, linewidth=2, marker="o",
+                 markersize=5, markerfacecolor=GREEN)
+        ax2.fill_between(valid_x, valid_y, alpha=0.15, color=GREEN)
+        for i, v in zip(valid_x, valid_y):
+            ax2.text(i, v + max(valid_y) * 0.04, f"{v:.2f}%",
+                     ha="center", va="bottom", color=WHITE, fontsize=8)
+        ax2.set_ylabel("%", color=GRAY, fontsize=9)
+    else:
+        _no_data(ax2, "배당수익률 (%)")
+
+    ax2.set_xticks(x)
+    ax2.set_xticklabels(years, color=GRAY, fontsize=9)
+    ax2.tick_params(colors=GRAY)
+    ax2.yaxis.label.set_color(GRAY)
+    for sp in ax2.spines.values():
+        sp.set_edgecolor("#334466")
+
+    # ── 패널 3: 배당성향 ──────────────────────────────────────────
+    ax3 = axes[2]
+    ax3.set_facecolor(AX_BG)
+    ax3.set_title("배당성향 (%)", color=WHITE, fontsize=11, pad=6)
+    if _has(pay_vals):
+        bars = [v if v is not None else 0 for v in pay_vals]
+        colors = [GREEN if (v or 0) <= 60 else "#E74C3C" for v in pay_vals]
+        ax3.bar(x, bars, color=colors, alpha=0.8, width=0.6)
+        for i, v in enumerate(pay_vals):
+            if v is not None and v > 0:
+                ax3.text(i, v + max(bars) * 0.02, f"{v:.1f}%",
+                         ha="center", va="bottom", color=WHITE, fontsize=8)
+        ax3.set_ylabel("%", color=GRAY, fontsize=9)
+        ax3.axhline(60, color="#E74C3C", linewidth=0.8, linestyle="--", alpha=0.6)
+    else:
+        _no_data(ax3, "배당성향 (%)")
+
+    ax3.set_xticks(x)
+    ax3.set_xticklabels(years, color=GRAY, fontsize=9)
+    ax3.tick_params(colors=GRAY)
+    ax3.yaxis.label.set_color(GRAY)
+    for sp in ax3.spines.values():
+        sp.set_edgecolor("#334466")
+
+    fig.suptitle(f"{name} | 배당 이력", color=WHITE, fontsize=13, y=0.98)
     return _buf()

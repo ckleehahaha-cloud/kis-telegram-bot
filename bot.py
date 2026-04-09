@@ -453,6 +453,86 @@ async def _send_ratio(chat_id: int, code: str, name: str, ctx):
         await ctx.bot.edit_message_text(f"❌ 오류: {e}", chat_id=chat_id, message_id=msg.message_id)
 
 
+async def _send_summary(chat_id: int, code: str, name: str, ctx):
+    """가치투자 요약 텍스트"""
+    msg = await ctx.bot.send_message(chat_id, f"⏳ *{name}* 요약 지표 조회 중…", parse_mode="Markdown")
+    try:
+        d = kis_api.get_summary_data(code)
+
+        def _f(v, fmt):
+            return fmt.format(v) if v is not None else "N/A"
+
+        mkt_cap = d.get("mkt_cap")
+        if mkt_cap and mkt_cap >= 10000:
+            mkt_str = f"{mkt_cap / 10000:.2f}조원"
+        elif mkt_cap:
+            mkt_str = f"{mkt_cap:,}억원"
+        else:
+            mkt_str = "N/A"
+
+        change_r = d.get("change_r")
+        if change_r is not None:
+            sign = "+" if change_r >= 0 else ""
+            chg_str = f"{sign}{change_r:.2f}%"
+        else:
+            chg_str = "N/A"
+
+        text = (
+            f"*{name}* | 가치투자 요약\n"
+            f"`{'─' * 28}`\n"
+            f"`{'현재가':<8}` `{_f(d.get('price'), '{:,}원'):>14}` `{chg_str:>7}`\n"
+            f"`{'시가총액':<8}` `{mkt_str:>22}`\n"
+            f"`{'─' * 28}`\n"
+            f"`{'PER(실적)':<8}` `{_f(d.get('per'), '{:.1f}x'):>20}`\n"
+            f"`{'PER(선행)':<8}` `{_f(d.get('forward_per'), '{:.1f}x'):>20}`\n"
+            f"`{'PBR':<8}` `{_f(d.get('pbr'), '{:.2f}x'):>20}`\n"
+            f"`{'ROE':<8}` `{_f(d.get('roe'), '{:.1f}%'):>20}`\n"
+            f"`{'부채비율':<8}` `{_f(d.get('debt_ratio'), '{:.1f}%'):>20}`\n"
+            f"`{'영업이익률':<7}` `{_f(d.get('op_margin'), '{:.1f}%'):>20}`\n"
+            f"`{'52주위치':<8}` `{_f(d.get('w52_pos'), '{:.1f}%'):>20}`\n"
+        )
+        await _send_text(ctx.bot, chat_id, text)
+        await ctx.bot.delete_message(chat_id, msg.message_id)
+    except Exception as e:
+        logger.exception("요약 오류")
+        await ctx.bot.edit_message_text(f"❌ 오류: {e}", chat_id=chat_id, message_id=msg.message_id)
+
+
+def _fmt_dividend(data: list, name: str) -> str:
+    """배당 이력 raw data 텍스트"""
+    if not data:
+        return f"*{name}* | 배당 데이터 없음\n"
+    lines = [f"*{name}* | 배당 이력 Raw Data"]
+    lines.append("`기간    DPS(원)   수익률(%)  배당성향(%)`")
+    lines.append("`" + "-" * 40 + "`")
+    for d in data:
+        dps  = d.get("dps")
+        yld  = d.get("dividend_yield")
+        pyrt = d.get("payout_ratio")
+        dps_s  = f"{dps:>8,.0f}"  if dps  is not None else f"{'N/A':>8}"
+        yld_s  = f"{yld:>9.2f}"  if yld  is not None else f"{'N/A':>9}"
+        pyrt_s = f"{pyrt:>10.1f}" if pyrt is not None else f"{'N/A':>10}"
+        lines.append(f"`{d['year']}  {dps_s}  {yld_s}  {pyrt_s}`")
+    return "\n".join(lines)
+
+
+async def _send_dividend(chat_id: int, code: str, name: str, ctx):
+    """배당 이력 차트"""
+    msg = await ctx.bot.send_message(chat_id, f"⏳ *{name}* 배당 이력 조회 중…", parse_mode="Markdown")
+    try:
+        data          = kis_api.get_dividend_history(code)
+        price_info    = kis_api.get_current_price(code)
+        current_price = price_info.get("price", 0)
+        await ctx.bot.send_photo(chat_id,
+            photo=charts.chart_dividend(data, name, current_price),
+            caption=f"*{name}* | 배당 이력 (최근 10년)", parse_mode="Markdown")
+        await _send_text(ctx.bot, chat_id, _fmt_dividend(data, name))
+        await ctx.bot.delete_message(chat_id, msg.message_id)
+    except Exception as e:
+        logger.exception("배당 이력 오류")
+        await ctx.bot.edit_message_text(f"❌ 오류: {e}", chat_id=chat_id, message_id=msg.message_id)
+
+
 # mode → 전송 함수 매핑
 _SEND_FN = {
     "all":        _send_all,
@@ -464,6 +544,8 @@ _SEND_FN = {
     "ratio":      _send_ratio,
     "cashflow":   _send_cashflow,
     "valuation":  _send_valuation,
+    "summary":    _send_summary,
+    "dividend":   _send_dividend,
 }
 
 
@@ -516,6 +598,12 @@ async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "`/cf 삼성전자`  `/cashflow 삼성전자`\n"
         "  → 현금흐름표 차트 + Raw Data (연간+분기, DART 기준)\n"
         "  영업CF / 투자CF / 재무CF / FCF\n\n"
+        "`/sum 삼성전자`  `/summary 삼성전자`\n"
+        "  → 가치투자 요약 텍스트\n"
+        "  현재가 / 시가총액 / PER / PBR / ROE / 부채비율 / 영업이익률 / 52주위치\n\n"
+        "`/div 삼성전자`  `/dividend 삼성전자`\n"
+        "  → 배당 이력 차트 (최근 10년)\n"
+        "  DPS / 배당수익률 / 배당성향\n\n"
         "`/collect on` – 프로그램 매매 수집 시작\n"
         "`/collect off` – 수집 중지\n"
         "`/collect status` – 수집 현황\n"
@@ -542,6 +630,8 @@ async def _cmd_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE, mode: str
         "ratio":     "/r",
         "cashflow":  "/cf",
         "valuation": "/val",
+        "summary":   "/sum",
+        "dividend":  "/div",
     }
     if not ctx.args:
         await update.message.reply_text(
@@ -600,6 +690,12 @@ async def cmd_cashflow(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_valuation(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await _cmd_handler(update, ctx, "valuation")
+
+async def cmd_summary(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await _cmd_handler(update, ctx, "summary")
+
+async def cmd_dividend(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await _cmd_handler(update, ctx, "dividend")
 
 # ══════════════════════════════════════════════════════════════
 #  메시지 핸들러 (종목명/코드 직접 입력 → 전체 차트)
@@ -784,6 +880,10 @@ def main():
     app.add_handler(CommandHandler("cf",        cmd_cashflow))
     app.add_handler(CommandHandler("valuation", cmd_valuation))
     app.add_handler(CommandHandler("val",       cmd_valuation))
+    app.add_handler(CommandHandler("summary",   cmd_summary))
+    app.add_handler(CommandHandler("sum",       cmd_summary))
+    app.add_handler(CommandHandler("dividend",  cmd_dividend))
+    app.add_handler(CommandHandler("div",       cmd_dividend))
     app.add_handler(CommandHandler("collect",   cmd_collect))   # 수집기 제어
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(handle_callback, pattern=r"^stock:"))
