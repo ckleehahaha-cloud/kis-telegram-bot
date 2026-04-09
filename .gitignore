@@ -1,0 +1,37 @@
+# 설정 및 인증 (절대 커밋 금지)
+config.py
+.kis_token.json
+
+# 런타임 생성 파일
+.stock_list.json
+.dart_corp_codes.json
+data/
+
+# Claude Code 프로젝트 메타데이터
+.claude/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+
+# 가상환경
+.venv/
+venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
