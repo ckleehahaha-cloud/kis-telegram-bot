@@ -885,11 +885,11 @@ def chart_valuation(annual: list, name: str):
         ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: f"{v:.1f}"))
         ax.axhline(0, color="white", linewidth=0.4, alpha=0.3)
 
-    fig, axes = plt.subplots(3, 1, figsize=(14, 14))
+    fig, axes = plt.subplots(5, 1, figsize=(14, 22))
     fig.patch.set_facecolor("#1A1A2E")
     fig.suptitle(
         f"[밸류에이션]  {name}\n"
-        "EPS / BPS (원)  |  PER / PBR / POR (배, 기간말 월봉 종가 기준)",
+        "EPS / BPS (원)  |  PER(주가순익비율) / POR(주가영익비율) / PBR(주가순자산비율) (배)",
         fontsize=13, color="white",
     )
 
@@ -899,10 +899,16 @@ def chart_valuation(annual: list, name: str):
     axes[1].set_title("BPS (주당순자산)", color="white", fontsize=11)
     _draw_panel(axes[1], annual, "bps", "BPS (원)", "#55EFC4", is_annual=True)
 
-    axes[2].set_title("POR (연말시총 / 영업이익)", color="white", fontsize=11)
-    _draw_panel(axes[2], annual, "por", "POR (배)", "#FDCB6E", is_annual=True)
+    axes[2].set_title("PER — 주가순익비율 (주가 / EPS)", color="white", fontsize=11)
+    _draw_panel(axes[2], annual, "per", "PER (배)", "#FF6B6B", is_annual=True)
 
-    fig.subplots_adjust(top=0.92, hspace=0.5)
+    axes[3].set_title("POR — 주가영익비율 (주가 / 주당영업이익)", color="white", fontsize=11)
+    _draw_panel(axes[3], annual, "por", "POR (배)", "#FDCB6E", is_annual=True)
+
+    axes[4].set_title("PBR — 주가순자산비율 (주가 / BPS)", color="white", fontsize=11)
+    _draw_panel(axes[4], annual, "pbr", "PBR (배)", "#A29BFE", is_annual=True)
+
+    fig.subplots_adjust(top=0.94, hspace=0.5)
     return _buf()
 
 

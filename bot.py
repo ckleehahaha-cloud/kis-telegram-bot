@@ -379,8 +379,8 @@ def _fmt_valuation(data: list, label: str) -> str:
     if not data:
         return f"*{label}* 데이터 없음\n"
     lines = [f"*{label}*"]
-    lines.append("`기간         EPS      BPS     PER   PBR   POR`")
-    lines.append("`" + "-" * 48 + "`")
+    lines.append("`기간      EPS      BPS  PER(순익)  POR(영익)  PBR(자산)`")
+    lines.append("`" + "-" * 52 + "`")
     for d in data:
         def _n(v, fmt):
             try:
@@ -389,10 +389,10 @@ def _fmt_valuation(data: list, label: str) -> str:
                 return "-"
         eps_s = _n(d.get("eps"), ">8,.0f")
         bps_s = _n(d.get("bps"), ">8,.0f")
-        per_s = _n(d.get("per"), ">6.1f")
-        pbr_s = _n(d.get("pbr"), ">6.2f")
-        por_s = _n(d.get("por"), ">6.1f")
-        lines.append(f"`{d['stac_yymm']}  {eps_s}  {bps_s}  {per_s}  {pbr_s}  {por_s}`")
+        per_s = _n(d.get("per"), ">9.1f")
+        por_s = _n(d.get("por"), ">9.1f")
+        pbr_s = _n(d.get("pbr"), ">9.2f")
+        lines.append(f"`{d['stac_yymm']}  {eps_s}  {bps_s}  {per_s}  {por_s}  {pbr_s}`")
     return "\n".join(lines)
 
 
@@ -418,8 +418,8 @@ async def _send_valuation(chat_id: int, code: str, name: str, ctx):
             net_income = inc.get("net_income")
             d["per"] = round(price / eps, 2) if price and eps and eps > 0 else None
             d["pbr"] = round(price / bps, 2) if price and bps and bps > 0 else None
-            # POR = 연말시총 / 영업이익
-            # 시총 = price × (net_income억원 × 1e8 / eps) → 1e8 상쇄
+            # POR = 주가 / 주당영업이익
+            # 주당영업이익 = op_income × eps / net_income  (억원 단위 상쇄)
             # POR = price × net_income / (eps × op_income)
             if price and eps and eps > 0 and op_income and op_income > 0 and net_income:
                 d["por"] = round((price * net_income) / (eps * op_income), 2)
