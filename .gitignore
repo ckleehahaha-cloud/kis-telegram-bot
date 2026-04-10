@@ -5,6 +5,7 @@ config.py
 # 런타임 생성 파일
 .stock_list.json
 .dart_corp_codes.json
+.font_cache.json
 data/
 
 # Claude Code 프로젝트 메타데이터

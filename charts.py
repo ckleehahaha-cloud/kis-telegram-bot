@@ -1,4 +1,6 @@
 import io
+import os
+import json
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -9,10 +11,22 @@ from matplotlib.gridspec import GridSpec
 from matplotlib.patches import Patch, FancyBboxPatch
 import numpy as np
 from datetime import datetime
+from pathlib import Path
 import config
+
+_FONT_CACHE_FILE = Path(__file__).parent / ".font_cache.json"
 
 
 def _find_korean_font():
+    # 캐시 파일이 있으면 바로 반환
+    if _FONT_CACHE_FILE.exists():
+        try:
+            cached = json.loads(_FONT_CACHE_FILE.read_text(encoding="utf-8"))
+            if cached.get("font"):
+                return cached["font"]
+        except Exception:
+            pass
+
     candidates = [
         "AppleGothic", "Apple SD Gothic Neo", "NanumGothic",
         "NanumBarunGothic", "Malgun Gothic", "Noto Sans CJK KR",
@@ -20,8 +34,9 @@ def _find_korean_font():
     available = {f.name for f in _fm.fontManager.ttflist}
     for font in candidates:
         if font in available:
+            _FONT_CACHE_FILE.write_text(json.dumps({"font": font}), encoding="utf-8")
             return font
-    import os
+
     for path in [
         "/System/Library/Fonts/Supplemental/AppleGothic.ttf",
         "/Library/Fonts/NanumGothic.ttf",
@@ -31,7 +46,11 @@ def _find_korean_font():
         if os.path.exists(path):
             _fm.fontManager.addfont(path)
             prop = _fm.FontProperties(fname=path)
-            return prop.get_name()
+            name = prop.get_name()
+            _FONT_CACHE_FILE.write_text(json.dumps({"font": name}), encoding="utf-8")
+            return name
+
+    _FONT_CACHE_FILE.write_text(json.dumps({"font": "DejaVu Sans"}), encoding="utf-8")
     return "DejaVu Sans"
 
 

@@ -71,7 +71,7 @@ python collector.py
 | 단축 | 전체 | 설명 |
 |------|------|------|
 | `/m` | `/market` | 시장 자금 동향 (예탁금/신용융자/미수금/선물예수금) |
-| `/volatility` | `/volatility` | KOSPI 심리 변동 비율 — RobustSTL 잔차 비율 최근 3개월 (yfinance, 수십 초 소요) |
+| `/volatility` | `/vol` | KOSPI 심리 변동 비율 — RobustSTL 잔차 비율 최근 3개월 (yfinance, 수십 초 소요) |
 
 ### 📊 재무 (종목명 필요)
 

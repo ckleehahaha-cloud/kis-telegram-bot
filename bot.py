@@ -28,9 +28,6 @@ import kis_api
 import dart_api
 import charts
 import collector as _collector
-import yfinance as _yf
-import numpy as _np
-from RobustSTL import RobustSTL as _RobustSTL
 
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s – %(message)s",
@@ -633,6 +630,9 @@ async def _send_volatility(chat_id: int, ctx):
     msg = await ctx.bot.send_message(chat_id, "⏳ KOSPI 심리 변동 비율 분석 중… (수십 초 소요)", parse_mode="Markdown")
     try:
         def _compute():
+            import yfinance as _yf
+            from RobustSTL import RobustSTL as _RobustSTL
+
             data = _yf.download("^KS11", period="3y", progress=False)
             close = data["Close"].dropna()
             if hasattr(close, "iloc") and close.ndim > 1:
@@ -707,26 +707,27 @@ async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not update.message:
         return
     await update.message.reply_text(
-        "*📈 시장*  예: `/s 삼성전자`\n"
-        "`/s` `/supply` — 수급\n"
-        "`/p` `/program` — 프로그램 매매\n"
-        "`/i` `/intraday` — 당일수급\n"
-        "`/e` `/estimate` — 추정수급\n"
-        "`/v` `/volume` — 거래량\n"
-        "`/m` `/market` — 시장자금 _(종목 불필요)_\n"
-        "`/volatility` — KOSPI 심리 변동 비율 _(종목 불필요)_\n\n"
-        "*📊 재무*  예: `/fin 삼성전자`\n"
-        "`/fin` `/finance` — 손익계산서\n"
-        "`/r` `/ratio` — 재무비율\n"
-        "`/val` `/valuation` — 밸류에이션\n"
-        "`/cf` `/cashflow` — 현금흐름\n"
-        "`/sum` `/summary` — 요약\n"
-        "`/div` `/dividend` — 배당\n"
-        "`/fa` `/financeall` — 재무 전체 _(fin·r·val·cf·sum·div·pr 순서대로)_\n"
-        "`/pr` `/pricerange` — 주가범위 _(EPS/DPS/주가Min·Max, 10년)_\n"
-        "`/du` `/dupont` — DuPont 분석 _(ROE=순이익률×자산회전율×레버리지, 10년)_\n\n"
-        "_종목명 직접 입력 또는 6자리 코드 → `/s` 동일_",
-        parse_mode="Markdown",
+        "*📈 시장*  \\(종목명 필요\\)  예: `/s 삼성전자`\n"
+        "`/s` · `/supply` — 3개월 수급 \\+ 당일 시간대별 \\+ 프로그램 매매\n"
+        "`/p` · `/program` — 당일 프로그램 매매\n"
+        "`/i` · `/intraday` — 당일 시간대별 투자자 수급\n"
+        "`/e` · `/estimate` — 장중 외국인/기관 잠정 추정 수급\n"
+        "`/v` · `/volume` — 가격대별 거래량 분포\n\n"
+        "*📈 시장*  \\(종목명 불필요\\)\n"
+        "`/m` · `/market` — 시장 자금 동향\n"
+        "`/volatility` · `/vol` — KOSPI 심리 변동 비율 \\(최근 3개월\\)\n\n"
+        "*📊 재무*  \\(종목명 필요\\)  예: `/fin 삼성전자`\n"
+        "`/fin` · `/finance` — 손익계산서 \\(연간\\+분기\\)\n"
+        "`/r` · `/ratio` — 재무비율 \\(ROE/부채비율/증가율\\)\n"
+        "`/val` · `/valuation` — 밸류에이션 \\(EPS/BPS/PER/PBR/POR\\)\n"
+        "`/cf` · `/cashflow` — 현금흐름표 \\(연간\\+분기, DART\\)\n"
+        "`/sum` · `/summary` — 가치투자 요약\n"
+        "`/div` · `/dividend` — 배당 이력 \\(최근 10년\\)\n"
+        "`/pr` · `/pricerange` — 주가범위 \\(EPS/DPS/주가Min·Max, 10년\\)\n"
+        "`/du` · `/dupont` — DuPont 분석 \\(ROE 3요소 분해, 10년\\)\n"
+        "`/fa` · `/financeall` — 재무 전체 \\(fin→r→val→cf→sum→div→pr\\)\n\n"
+        "_종목명 또는 6자리 코드 직접 입력 → `/s` 동일_",
+        parse_mode="MarkdownV2",
     )
 
 
@@ -1024,6 +1025,7 @@ def main():
     app.add_handler(CommandHandler("dupont",      cmd_dupont))
     app.add_handler(CommandHandler("du",          cmd_dupont))
     app.add_handler(CommandHandler("volatility",  cmd_volatility))
+    app.add_handler(CommandHandler("vol",         cmd_volatility))
     app.add_handler(CommandHandler("collect",   cmd_collect))   # 수집기 제어
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(handle_callback, pattern=r"^stock:"))
