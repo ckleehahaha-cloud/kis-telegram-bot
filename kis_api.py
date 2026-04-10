@@ -776,16 +776,19 @@ def get_price_range_history(stock_code: str) -> list[dict]:
         if r.get("bps"):
             bps_map[yr] = r["bps"]
 
-    # 연간 주가 min/max by year
-    price_min_map: dict = {}
-    price_max_map: dict = {}
+    # 연간 주가 min/max/close by year
+    price_min_map:   dict = {}
+    price_max_map:   dict = {}
+    price_close_map: dict = {}
     for r in price_data:
         yr = int(r["date"][:4])
-        lo, hi = r.get("low", 0), r.get("high", 0)
+        lo, hi, cl = r.get("low", 0), r.get("high", 0), r.get("close", 0)
         if lo:
             price_min_map[yr] = min(price_min_map.get(yr, lo), lo)
         if hi:
             price_max_map[yr] = max(price_max_map.get(yr, hi), hi)
+        if cl:
+            price_close_map[yr] = cl   # 연간봉 close = 연말 종가
 
     # 합치기: 두 소스 중 어느 쪽이든 데이터 있는 연도 포함
     years = sorted(set(eps_map) | set(price_min_map))
@@ -799,9 +802,10 @@ def get_price_range_history(stock_code: str) -> list[dict]:
             "year":      yr,
             "eps":       eps_map.get(yr),
             "bps":       bps_map.get(yr),
-            "price_min": price_min_map.get(yr),
-            "price_max": price_max_map.get(yr),
-            "dps":       None,
+            "price_min":   price_min_map.get(yr),
+            "price_max":   price_max_map.get(yr),
+            "price_close": price_close_map.get(yr),
+            "dps":         None,
         })
     return result
 

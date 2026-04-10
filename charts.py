@@ -1171,9 +1171,9 @@ def chart_price_range(data: list, name: str) -> io.BytesIO:
     years     = [str(r["year"]) for r in data]
     eps_vals  = [r.get("eps")  or 0.0 for r in data]
     dps_vals  = [r.get("dps")  or 0.0 for r in data]
-    p_min     = [r.get("price_min") or 0 for r in data]
-    p_max     = [r.get("price_max") or 0 for r in data]
-    p_mid     = [(lo + hi) / 2 for lo, hi in zip(p_min, p_max)]
+    p_min     = [r.get("price_min")   or 0 for r in data]
+    p_max     = [r.get("price_max")   or 0 for r in data]
+    p_close   = [r.get("price_close") or 0 for r in data]
     x         = np.arange(len(years))
     w         = 0.35
 
@@ -1181,7 +1181,7 @@ def chart_price_range(data: list, name: str) -> io.BytesIO:
     fig.patch.set_facecolor("#1A1A2E")
     fig.suptitle(
         f"[주가범위]  {name}\n"
-        "EPS / DPS (원)  |  연간 주가 Min·Max 범위",
+        "EPS / DPS (원)  |  연간 주가 Min·Max 범위 + 연말종가",
         fontsize=12, color="white",
     )
 
@@ -1209,10 +1209,10 @@ def chart_price_range(data: list, name: str) -> io.BytesIO:
     # ── Row2: 주가 범위 밴드 ────────────────────────────────
     ax2.set_facecolor("#16213E")
     ax2.fill_between(x, p_min, p_max, color="#E74C3C", alpha=0.25, label="주가 범위")
-    ax2.plot(x, p_mid, color="#E74C3C", linewidth=2, marker="o",
-             markersize=4, label="중간가", alpha=0.9)
-    ax2.plot(x, p_min, color="#E74C3C", linewidth=0.8, linestyle="--", alpha=0.5)
-    ax2.plot(x, p_max, color="#E74C3C", linewidth=0.8, linestyle="--", alpha=0.5)
+    ax2.plot(x, p_min,   color="#E74C3C", linewidth=0.8, linestyle="--", alpha=0.5)
+    ax2.plot(x, p_max,   color="#E74C3C", linewidth=0.8, linestyle="--", alpha=0.5)
+    ax2.plot(x, p_close, color="#F1C40F", linewidth=2, marker="D",
+             markersize=4, label="연말종가", alpha=0.95)
     ax2.set_ylabel("주가 (원)", color="white", fontsize=9)
     ax2.set_xticks(x)
     ax2.set_xticklabels(years, fontsize=8, color="gray")

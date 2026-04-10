@@ -540,15 +540,16 @@ def _fmt_pricerange(data: list, name: str) -> str:
     if not data:
         return f"*{name}* | 주가범위 데이터 없음\n"
     lines = [f"*{name}* | 주가범위 Raw Data"]
-    header = f"{'연도':>4} {'EPS':>8} {'DPS':>7} {'주가Min':>9} {'주가Max':>9}"
+    header = f"{'연도':>4} {'EPS':>8} {'DPS':>7} {'주가Min':>9} {'주가Max':>9} {'종가':>9}"
     lines.append(f"`{header}`")
-    lines.append("`" + "-" * 42 + "`")
+    lines.append("`" + "-" * 52 + "`")
     for r in data:
-        eps = f"{int(r['eps']):>8,}" if r.get("eps") else f"{'N/A':>8}"
-        dps = f"{int(r['dps']):>7,}" if r.get("dps") else f"{'N/A':>7}"
-        pmi = f"{int(r['price_min']):>9,}" if r.get("price_min") else f"{'N/A':>9}"
-        pma = f"{int(r['price_max']):>9,}" if r.get("price_max") else f"{'N/A':>9}"
-        lines.append(f"`{r['year']:>4} {eps} {dps} {pmi} {pma}`")
+        eps = f"{int(r['eps']):>8,}"         if r.get("eps")         else f"{'N/A':>8}"
+        dps = f"{int(r['dps']):>7,}"         if r.get("dps")         else f"{'N/A':>7}"
+        pmi = f"{int(r['price_min']):>9,}"   if r.get("price_min")   else f"{'N/A':>9}"
+        pma = f"{int(r['price_max']):>9,}"   if r.get("price_max")   else f"{'N/A':>9}"
+        pcl = f"{int(r['price_close']):>9,}" if r.get("price_close") else f"{'N/A':>9}"
+        lines.append(f"`{r['year']:>4} {eps} {dps} {pmi} {pma} {pcl}`")
     return "\n".join(lines)
 
 
@@ -631,7 +632,7 @@ async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "`/cf` `/cashflow` — 현금흐름\n"
         "`/sum` `/summary` — 요약\n"
         "`/div` `/dividend` — 배당\n"
-        "`/fa` `/financeall` — 재무 전체 _(위 6개 순서대로)_\n"
+        "`/fa` `/financeall` — 재무 전체 _(fin·r·val·cf·sum·div·pr 순서대로)_\n"
         "`/pr` `/pricerange` — 주가범위 _(EPS/DPS/주가Min·Max, 10년)_\n\n"
         "_종목명 직접 입력 또는 6자리 코드 → `/s` 동일_",
         parse_mode="Markdown",
