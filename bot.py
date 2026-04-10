@@ -14,6 +14,7 @@ bot.py  –  텔레그램 봇 메인
   (또는 그냥 종목명 입력 → 전체 차트)
 """
 
+import asyncio
 import logging
 import threading
 from datetime import datetime, timedelta
@@ -353,8 +354,10 @@ async def _send_cashflow(chat_id: int, code: str, name: str, ctx):
     """현금흐름표 (연간, DART)"""
     msg = await ctx.bot.send_message(chat_id, f"⏳ *{name}* 현금흐름표 조회 중… (DART)", parse_mode="Markdown")
     try:
-        annual    = dart_api.get_cash_flow(code, div="0")
-        quarterly = dart_api.get_cash_flow(code, div="1")
+        annual, quarterly = await asyncio.gather(
+            asyncio.to_thread(dart_api.get_cash_flow, code, "0"),
+            asyncio.to_thread(dart_api.get_cash_flow, code, "1"),
+        )
         await ctx.bot.send_photo(chat_id,
             photo=charts.chart_cash_flow(annual, quarterly, name),
             caption=f"*{name}* | 현금흐름표 (연간+분기, DART 기준)", parse_mode="Markdown")
@@ -572,44 +575,13 @@ async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not update.message:
         return
     await update.message.reply_text(
-        "📖 *명령어 목록*\n\n"
-        "`/s 삼성전자`  `/supply 삼성전자`\n"
-        "  → 3개월 수급 차트 + 당일 프로그램 매매 차트\n"
-        "  → 투자자별 순매수 Raw Data (최근 30일) + 프로그램 매매 Raw Data\n\n"
-        "`/p 삼성전자`  `/program 삼성전자`  `/i`  `/intraday`\n"
-        "  → 당일 프로그램 매매 차트 + Raw Data\n\n"
-        "`/e 삼성전자`  `/estimate 삼성전자`\n"
-        "  → 장중 외국인/기관 잠정 추정 수급 (텍스트 + 차트)\n"
-        "  ⚠️ 장중(09:00~15:00)에만 제공\n\n"
-        "`/m`  `/market`\n"
-        "  → 시장 자금 동향 차트 (3개월) + Raw Data (최근 30일)\n"
-        "  예탁금 / 신용융자 / 미수금 / 선물예수금\n\n"
-        "`/v 삼성전자`  `/volume 삼성전자`\n"
-        "  → 가격대별 거래량 분포 차트 + Raw Data (VWAP 포함)\n\n"
-        "`/fin 삼성전자`  `/finance 삼성전자`\n"
-        "  → 손익계산서 차트 + Raw Data (연간+분기)\n"
-        "  매출 / 영업이익 / 순이익 / 영업이익률\n\n"
-        "`/r 삼성전자`  `/ratio 삼성전자`\n"
-        "  → 재무비율 차트 + Raw Data (연간+분기)\n"
-        "  증가율 / ROE / 부채비율\n\n"
-        "`/val 삼성전자`  `/valuation 삼성전자`\n"
-        "  → 밸류에이션 차트 + Raw Data (연간)\n"
-        "  EPS / BPS / DPS (DART) / PER / PBR\n\n"
-        "`/cf 삼성전자`  `/cashflow 삼성전자`\n"
-        "  → 현금흐름표 차트 + Raw Data (연간+분기, DART 기준)\n"
-        "  영업CF / 투자CF / 재무CF / FCF\n\n"
-        "`/sum 삼성전자`  `/summary 삼성전자`\n"
-        "  → 가치투자 요약 텍스트\n"
-        "  현재가 / 시가총액 / PER / PBR / ROE / 부채비율 / 영업이익률 / 52주위치\n\n"
-        "`/div 삼성전자`  `/dividend 삼성전자`\n"
-        "  → 배당 이력 차트 (최근 10년)\n"
-        "  DPS / 배당수익률 / 배당성향\n\n"
-        "`/collect on` – 프로그램 매매 수집 시작\n"
-        "`/collect off` – 수집 중지\n"
-        "`/collect status` – 수집 현황\n"
-        "`/collect add 005930` – 종목 추가\n"
-        "`/collect remove 005930` – 종목 제거\n\n"
-        "종목명 직접 입력 또는 6자리 코드 입력 시 `/s`와 동일하게 동작합니다.",
+        "*명령어 목록*\n\n"
+        "`/s` 수급  `/p` 프로그램  `/i` 당일수급\n"
+        "`/e` 추정수급  `/m` 시장자금  `/v` 거래량\n"
+        "`/fin` 손익  `/r` 재무비율  `/val` 밸류에이션\n"
+        "`/cf` 현금흐름  `/sum` 요약  `/div` 배당\n\n"
+        "종목명 또는 6자리 코드 직접 입력 → `/s`와 동일\n\n"
+        "`/collect on|off|status|add 코드|remove 코드`",
         parse_mode="Markdown",
     )
 

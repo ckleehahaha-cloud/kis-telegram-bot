@@ -6,6 +6,7 @@ dart_api.py  –  DART OpenAPI 래퍼
 """
 
 import time, json, logging, requests, zipfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import io as _io
 from datetime import datetime
 from pathlib import Path
@@ -214,7 +215,6 @@ def get_cash_flow(stock_code: str, div: str = "0") -> list[dict]:
                 inv = _find(cf_items, "투자활동")
                 fin = _find(cf_items, "재무활동")
                 if op:
-                    time.sleep(0.3)
                     return op, inv, fin, cf_items
             except Exception as e:
                 logger.warning("DART CF %s/%s/%s 실패: %s", bsns_year, reprt_code, fs_div, e)
@@ -222,77 +222,88 @@ def get_cash_flow(stock_code: str, div: str = "0") -> list[dict]:
 
     current_year = datetime.today().year
 
+    def _amt(item, field_add, field_th):
+        if not item:
+            return 0.0
+        return _to_uk(item.get(field_add) or item.get(field_th) or 0)
+
     # ── 연간 ──────────────────────────────────────────────────
     if div == "0":
         result_map: dict = {}
         logged = False
-        for bsns_year in range(current_year - 1, current_year - 11, -2):
-            op, inv, fin, cf_items = _fetch_cf(bsns_year, "11011")
-            if not op:
-                time.sleep(0.2)
-                continue
-            if not logged:
-                logger.info("[dart_cf_annual] keys=%s sample=%s",
-                            list(cf_items[0].keys()), cf_items[0])
-                logged = True
-            for period, field in [(f"{bsns_year}12",     "thstrm_amount"),
-                                   (f"{bsns_year - 1}12", "frmtrm_amount")]:
-                if period not in result_map:
-                    result_map[period] = {
-                        "period":    period,
-                        "operating": _to_uk(op.get(field)),
-                        "investing": _to_uk(inv.get(field) if inv else 0),
-                        "financing": _to_uk(fin.get(field) if fin else 0),
-                    }
-            time.sleep(0.2)
+        years = list(range(current_year - 1, current_year - 11, -2))
+
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            futures = {executor.submit(_fetch_cf, y, "11011"): y for y in years}
+            for fut in as_completed(futures):
+                bsns_year = futures[fut]
+                op, inv, fin, cf_items = fut.result()
+                if not op:
+                    continue
+                if not logged:
+                    logger.info("[dart_cf_annual] keys=%s sample=%s",
+                                list(cf_items[0].keys()), cf_items[0])
+                    logged = True
+                for period, field in [(f"{bsns_year}12",     "thstrm_amount"),
+                                       (f"{bsns_year - 1}12", "frmtrm_amount")]:
+                    if period not in result_map:
+                        result_map[period] = {
+                            "period":    period,
+                            "operating": _to_uk(op.get(field)),
+                            "investing": _to_uk(inv.get(field) if inv else 0),
+                            "financing": _to_uk(fin.get(field) if fin else 0),
+                        }
+
         result = sorted(result_map.values(), key=lambda x: x["period"])
         logger.info("[dart_cf_annual] %s → %d건", stock_code, len(result))
         return result
 
     # ── 분기 ──────────────────────────────────────────────────
-    # reprt_code → 결산월 매핑 (당기 누계 CF 사용)
     QTRS = [("11013", "03"), ("11012", "06"), ("11014", "09"), ("11011", "12")]
-    result_map = {}
     logged = False
+    years = list(range(current_year - 1, current_year - 6, -1))
 
-    for bsns_year in range(current_year - 1, current_year - 6, -1):  # 최근 5년
-        cumul: dict = {}   # month → {operating, investing, financing}
+    # 모든 (year, quarter) 조합을 병렬 fetch
+    tasks = [(y, rc, mo) for y in years for rc, mo in QTRS]
+    fetched: dict = {}  # (year, month) → {operating, investing, financing}
 
-        for reprt_code, month in QTRS:
-            op, inv, fin, cf_items = _fetch_cf(bsns_year, reprt_code)
+    def _fetch_quarterly(bsns_year, reprt_code, month):
+        return bsns_year, month, *_fetch_cf(bsns_year, reprt_code)
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        futures = {executor.submit(_fetch_quarterly, y, rc, mo): (y, rc, mo)
+                   for y, rc, mo in tasks}
+        for fut in as_completed(futures):
+            bsns_year, month, op, inv, fin, cf_items = fut.result()
             if not op:
                 continue
-            if not logged:
-                logger.info("[dart_cf_quarterly] reprt=%s keys=%s sample=%s",
-                            reprt_code, list(cf_items[0].keys()), cf_items[0])
+            if not logged and cf_items:
+                logger.info("[dart_cf_quarterly] keys=%s sample=%s",
+                            list(cf_items[0].keys()), cf_items[0])
                 logged = True
-            # thstrm_add_amount = 누계(YTD), thstrm_amount = 당기
-            # CF는 항상 YTD 누계로 제공 → add_amount 우선
-            def _amt(item, field_add, field_th):
-                if not item:
-                    return 0.0
-                return _to_uk(item.get(field_add) or item.get(field_th) or 0)
-
-            cumul[month] = {
+            fetched[(bsns_year, month)] = {
                 "operating": _amt(op,  "thstrm_add_amount", "thstrm_amount"),
                 "investing": _amt(inv, "thstrm_add_amount", "thstrm_amount"),
                 "financing": _amt(fin, "thstrm_add_amount", "thstrm_amount"),
             }
 
-        # 누적 → 단분기 diff
+    # 누적 → 단분기 diff (연도별 순서 유지)
+    result_map: dict = {}
+    for bsns_year in years:
         prev = {"operating": 0.0, "investing": 0.0, "financing": 0.0}
         for _, month in QTRS:
-            if month not in cumul:
+            if (bsns_year, month) not in fetched:
                 prev = {"operating": 0.0, "investing": 0.0, "financing": 0.0}
                 continue
+            cumul = fetched[(bsns_year, month)]
             period = f"{bsns_year}{month}"
             result_map[period] = {
                 "period":    period,
-                "operating": cumul[month]["operating"] - prev["operating"],
-                "investing": cumul[month]["investing"] - prev["investing"],
-                "financing": cumul[month]["financing"] - prev["financing"],
+                "operating": cumul["operating"] - prev["operating"],
+                "investing": cumul["investing"] - prev["investing"],
+                "financing": cumul["financing"] - prev["financing"],
             }
-            prev = cumul[month]
+            prev = cumul
 
     result = sorted(result_map.values(), key=lambda x: x["period"])
     logger.info("[dart_cf_quarterly] %s → %d건", stock_code, len(result))
