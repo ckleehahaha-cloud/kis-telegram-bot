@@ -430,8 +430,8 @@ def get_market_funds(days: int = 90) -> list[dict]:
     start_dt = end_dt - timedelta(days=days)
     params   = {
         "FID_COND_MRKT_DIV_CODE": "J",
-        "FID_INPUT_DATE_1":        start_dt.strftime("%Y%m%d"),
-        "FID_INPUT_DATE_2":        end_dt.strftime("%Y%m%d"),
+        "FID_INPUT_DATE_1":        end_dt.strftime("%Y%m%d"),
+        "FID_INPUT_DATE_2":        start_dt.strftime("%Y%m%d"),
     }
     try:
         resp = requests.get(url, headers=_headers("FHKST649100C0"), params=params, timeout=10)
@@ -744,6 +744,66 @@ def get_valuation_ratio(stock_code: str, div: str = "0") -> list[dict]:
     except Exception as e:
         logger.error("밸류에이션 조회 실패: %s", e)
         return []
+
+
+# ══════════════════════════════════════════════════════════════
+#  주가범위 + EPS/BPS 연간 (최근 10년)
+# ══════════════════════════════════════════════════════════════
+def get_price_range_history(stock_code: str) -> list[dict]:
+    """
+    최근 10년 연간 EPS/BPS + 주가 Min/Max 병합
+    1. get_valuation_ratio(stock_code, "0") → eps, bps by year (stac_yymm[:4])
+    2. get_price_history(stock_code, 10년전0101, 오늘, "Y") → high/low by year
+    반환: [{"year": int, "eps": float|None, "bps": float|None,
+             "price_min": int|None, "price_max": int|None, "dps": None}, ...]
+    dps는 dart_api에서 bot layer에서 채움.
+    """
+    today    = datetime.today()
+    start_dt = datetime(today.year - 10, 1, 1).strftime("%Y%m%d")
+    end_dt   = today.strftime("%Y%m%d")
+
+    val_data = get_valuation_ratio(stock_code, "0")
+    time.sleep(0.3)
+    price_data = get_price_history(stock_code, start_dt, end_dt, "Y")
+
+    # EPS/BPS by year
+    eps_map: dict = {}
+    bps_map: dict = {}
+    for r in val_data:
+        yr = int(r["stac_yymm"][:4])
+        if r.get("eps"):
+            eps_map[yr] = r["eps"]
+        if r.get("bps"):
+            bps_map[yr] = r["bps"]
+
+    # 연간 주가 min/max by year
+    price_min_map: dict = {}
+    price_max_map: dict = {}
+    for r in price_data:
+        yr = int(r["date"][:4])
+        lo, hi = r.get("low", 0), r.get("high", 0)
+        if lo:
+            price_min_map[yr] = min(price_min_map.get(yr, lo), lo)
+        if hi:
+            price_max_map[yr] = max(price_max_map.get(yr, hi), hi)
+
+    # 합치기: 두 소스 중 어느 쪽이든 데이터 있는 연도 포함
+    years = sorted(set(eps_map) | set(price_min_map))
+    # 최근 10년만
+    cutoff = today.year - 10
+    result = []
+    for yr in years:
+        if yr <= cutoff:
+            continue
+        result.append({
+            "year":      yr,
+            "eps":       eps_map.get(yr),
+            "bps":       bps_map.get(yr),
+            "price_min": price_min_map.get(yr),
+            "price_max": price_max_map.get(yr),
+            "dps":       None,
+        })
+    return result
 
 
 # ══════════════════════════════════════════════════════════════

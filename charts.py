@@ -1155,3 +1155,73 @@ def chart_dividend(data: list, name: str, current_price: float) -> io.BytesIO:
 
     fig.suptitle(f"{name} | 배당 이력", color=WHITE, fontsize=13, y=0.98)
     return _buf()
+
+
+# ══════════════════════════════════════════════════════════════
+#  주가범위 + EPS/DPS (최근 10년)
+# ══════════════════════════════════════════════════════════════
+def chart_price_range(data: list, name: str) -> io.BytesIO:
+    """
+    Row1 — EPS/DPS 그룹 막대 (EPS=#3498DB, DPS=#2ECC71)
+    Row2 — 연간 주가 범위 밴드 (fill_between low~high) + 중간선
+    """
+    if not data:
+        return _empty_chart("주가범위 데이터 없음", f"[주가범위] {name}")
+
+    years     = [str(r["year"]) for r in data]
+    eps_vals  = [r.get("eps")  or 0.0 for r in data]
+    dps_vals  = [r.get("dps")  or 0.0 for r in data]
+    p_min     = [r.get("price_min") or 0 for r in data]
+    p_max     = [r.get("price_max") or 0 for r in data]
+    p_mid     = [(lo + hi) / 2 for lo, hi in zip(p_min, p_max)]
+    x         = np.arange(len(years))
+    w         = 0.35
+
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
+    fig.patch.set_facecolor("#1A1A2E")
+    fig.suptitle(
+        f"[주가범위]  {name}\n"
+        "EPS / DPS (원)  |  연간 주가 Min·Max 범위",
+        fontsize=12, color="white",
+    )
+
+    # ── Row1: EPS / DPS 막대 ────────────────────────────────
+    ax1.set_facecolor("#16213E")
+    ax1.bar(x - w / 2, eps_vals, w, label="EPS", color="#3498DB", alpha=0.8)
+    ax1.bar(x + w / 2, dps_vals, w, label="DPS", color="#2ECC71", alpha=0.8)
+    ax1.axhline(0, color="white", linewidth=0.5, alpha=0.3)
+    ax1.set_ylabel("원", color="white", fontsize=9)
+    ax1.tick_params(colors="gray", labelsize=8)
+    ax1.yaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: f"{int(v):,}"))
+    ax1.legend(loc="upper left", fontsize=8, facecolor="#2C3E50",
+               labelcolor="white", framealpha=0.7)
+    for spine in ax1.spines.values():
+        spine.set_edgecolor("#2C3E50")
+    # 값 레이블
+    for xi, (e, d) in enumerate(zip(eps_vals, dps_vals)):
+        if e:
+            ax1.text(xi - w / 2, e + max(eps_vals) * 0.02, f"{int(e):,}",
+                     ha="center", va="bottom", fontsize=6, color="#74B9FF")
+        if d:
+            ax1.text(xi + w / 2, d + max(eps_vals) * 0.02, f"{int(d):,}",
+                     ha="center", va="bottom", fontsize=6, color="#55EFC4")
+
+    # ── Row2: 주가 범위 밴드 ────────────────────────────────
+    ax2.set_facecolor("#16213E")
+    ax2.fill_between(x, p_min, p_max, color="#E74C3C", alpha=0.25, label="주가 범위")
+    ax2.plot(x, p_mid, color="#E74C3C", linewidth=2, marker="o",
+             markersize=4, label="중간가", alpha=0.9)
+    ax2.plot(x, p_min, color="#E74C3C", linewidth=0.8, linestyle="--", alpha=0.5)
+    ax2.plot(x, p_max, color="#E74C3C", linewidth=0.8, linestyle="--", alpha=0.5)
+    ax2.set_ylabel("주가 (원)", color="white", fontsize=9)
+    ax2.set_xticks(x)
+    ax2.set_xticklabels(years, fontsize=8, color="gray")
+    ax2.tick_params(colors="gray", labelsize=8)
+    ax2.yaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: f"{int(v):,}"))
+    ax2.legend(loc="upper left", fontsize=8, facecolor="#2C3E50",
+               labelcolor="white", framealpha=0.7)
+    for spine in ax2.spines.values():
+        spine.set_edgecolor("#2C3E50")
+
+    fig.subplots_adjust(top=0.88, hspace=0.15)
+    return _buf()

@@ -238,10 +238,10 @@ def _fmt_market_funds(data: list) -> str:
     if not rows:
         return "*시장 자금* | 데이터 없음\n"
     lines = [f"*시장 자금 동향* Raw Data (최근 {len(rows)}일, 단위: 억원)"]
-    lines.append("`날짜        예탁금      전일비    신용융자    미수금    선물예수금`")
-    lines.append("`" + "-" * 58 + "`")
+    lines.append("`날짜          예탁금      전일비    신용융자    미수금    선물예수금`")
+    lines.append("`" + "-" * 60 + "`")
     for d in rows:
-        dt = f"{d['date'][2:4]}/{d['date'][4:6]}/{d['date'][6:]}"
+        dt = f"{d['date'][:4]}/{d['date'][4:6]}/{d['date'][6:]}"
         lines.append(
             f"`{dt}  {d['deposit']:>9,.0f}  {d['deposit_chg']:>+7,.0f}  "
             f"{d['credit']:>9,.0f}  {d['uncollected']:>6,.0f}  {d['futures']:>9,.0f}`"
@@ -536,9 +536,51 @@ async def _send_dividend(chat_id: int, code: str, name: str, ctx):
         await ctx.bot.edit_message_text(f"❌ 오류: {e}", chat_id=chat_id, message_id=msg.message_id)
 
 
+def _fmt_pricerange(data: list, name: str) -> str:
+    if not data:
+        return f"*{name}* | 주가범위 데이터 없음\n"
+    lines = [f"*{name}* | 주가범위 Raw Data"]
+    header = f"{'연도':>4} {'EPS':>8} {'DPS':>7} {'주가Min':>9} {'주가Max':>9}"
+    lines.append(f"`{header}`")
+    lines.append("`" + "-" * 42 + "`")
+    for r in data:
+        eps = f"{int(r['eps']):>8,}" if r.get("eps") else f"{'N/A':>8}"
+        dps = f"{int(r['dps']):>7,}" if r.get("dps") else f"{'N/A':>7}"
+        pmi = f"{int(r['price_min']):>9,}" if r.get("price_min") else f"{'N/A':>9}"
+        pma = f"{int(r['price_max']):>9,}" if r.get("price_max") else f"{'N/A':>9}"
+        lines.append(f"`{r['year']:>4} {eps} {dps} {pmi} {pma}`")
+    return "\n".join(lines)
+
+
+async def _send_pricerange(chat_id: int, code: str, name: str, ctx):
+    """주가범위 차트 (EPS/DPS/주가Min·Max, 최근 10년)"""
+    msg = await ctx.bot.send_message(chat_id, f"⏳ *{name}* 주가범위 조회 중…", parse_mode="Markdown")
+    try:
+        kis_data = kis_api.get_price_range_history(code)
+        dps_map  = dart_api.get_dividend_per_share(code)
+        for r in kis_data:
+            r["dps"] = dps_map.get(str(r["year"]))
+        await ctx.bot.send_photo(chat_id,
+            photo=charts.chart_price_range(kis_data, name),
+            caption=f"*{name}* | 주가범위 (EPS/DPS/주가Min·Max, 최근 10년)", parse_mode="Markdown")
+        await _send_text(ctx.bot, chat_id, _fmt_pricerange(kis_data, name))
+        await ctx.bot.delete_message(chat_id, msg.message_id)
+    except Exception as e:
+        logger.exception("주가범위 오류")
+        await ctx.bot.edit_message_text(f"❌ 오류: {e}", chat_id=chat_id, message_id=msg.message_id)
+
+
+async def _send_finance_all(chat_id: int, code: str, name: str, ctx):
+    """재무 전체: 손익 → 재무비율 → 밸류에이션 → 현금흐름 → 요약 → 배당 → 주가범위 순서로 전송"""
+    for fn in (_send_finance, _send_ratio, _send_valuation, _send_cashflow, _send_summary, _send_dividend, _send_pricerange):
+        await fn(chat_id, code, name, ctx)
+
+
 # mode → 전송 함수 매핑
 _SEND_FN = {
     "all":        _send_all,
+    "finall":     _send_finance_all,
+    "pricerange": _send_pricerange,
     "intraday":   _send_program,
     "program":    _send_program,
     "estimate":   _send_estimate,
@@ -575,13 +617,23 @@ async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not update.message:
         return
     await update.message.reply_text(
-        "*명령어 목록*\n\n"
-        "`/s` 수급  `/p` 프로그램  `/i` 당일수급\n"
-        "`/e` 추정수급  `/m` 시장자금  `/v` 거래량\n"
-        "`/fin` 손익  `/r` 재무비율  `/val` 밸류에이션\n"
-        "`/cf` 현금흐름  `/sum` 요약  `/div` 배당\n\n"
-        "종목명 또는 6자리 코드 직접 입력 → `/s`와 동일\n\n"
-        "`/collect on|off|status|add 코드|remove 코드`",
+        "*📈 시장*  예: `/s 삼성전자`\n"
+        "`/s` `/supply` — 수급\n"
+        "`/p` `/program` — 프로그램 매매\n"
+        "`/i` `/intraday` — 당일수급\n"
+        "`/e` `/estimate` — 추정수급\n"
+        "`/v` `/volume` — 거래량\n"
+        "`/m` `/market` — 시장자금 _(종목 불필요)_\n\n"
+        "*📊 재무*  예: `/fin 삼성전자`\n"
+        "`/fin` `/finance` — 손익계산서\n"
+        "`/r` `/ratio` — 재무비율\n"
+        "`/val` `/valuation` — 밸류에이션\n"
+        "`/cf` `/cashflow` — 현금흐름\n"
+        "`/sum` `/summary` — 요약\n"
+        "`/div` `/dividend` — 배당\n"
+        "`/fa` `/financeall` — 재무 전체 _(위 6개 순서대로)_\n"
+        "`/pr` `/pricerange` — 주가범위 _(EPS/DPS/주가Min·Max, 10년)_\n\n"
+        "_종목명 직접 입력 또는 6자리 코드 → `/s` 동일_",
         parse_mode="Markdown",
     )
 
@@ -604,6 +656,8 @@ async def _cmd_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE, mode: str
         "valuation": "/val",
         "summary":   "/sum",
         "dividend":  "/div",
+        "finall":     "/fa",
+        "pricerange": "/pr",
     }
     if not ctx.args:
         await update.message.reply_text(
@@ -668,6 +722,12 @@ async def cmd_summary(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_dividend(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await _cmd_handler(update, ctx, "dividend")
+
+async def cmd_finance_all(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await _cmd_handler(update, ctx, "finall")
+
+async def cmd_pricerange(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await _cmd_handler(update, ctx, "pricerange")
 
 # ══════════════════════════════════════════════════════════════
 #  메시지 핸들러 (종목명/코드 직접 입력 → 전체 차트)
@@ -854,8 +914,12 @@ def main():
     app.add_handler(CommandHandler("val",       cmd_valuation))
     app.add_handler(CommandHandler("summary",   cmd_summary))
     app.add_handler(CommandHandler("sum",       cmd_summary))
-    app.add_handler(CommandHandler("dividend",  cmd_dividend))
-    app.add_handler(CommandHandler("div",       cmd_dividend))
+    app.add_handler(CommandHandler("dividend",   cmd_dividend))
+    app.add_handler(CommandHandler("div",        cmd_dividend))
+    app.add_handler(CommandHandler("financeall",  cmd_finance_all))
+    app.add_handler(CommandHandler("fa",          cmd_finance_all))
+    app.add_handler(CommandHandler("pricerange",  cmd_pricerange))
+    app.add_handler(CommandHandler("pr",          cmd_pricerange))
     app.add_handler(CommandHandler("collect",   cmd_collect))   # 수집기 제어
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(handle_callback, pattern=r"^stock:"))
