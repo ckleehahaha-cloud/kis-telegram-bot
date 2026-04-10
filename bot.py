@@ -379,8 +379,8 @@ def _fmt_valuation(data: list, label: str) -> str:
     if not data:
         return f"*{label}* 데이터 없음\n"
     lines = [f"*{label}*"]
-    lines.append("`기간         EPS      BPS      DPS     PER   PBR`")
-    lines.append("`" + "-" * 50 + "`")
+    lines.append("`기간         EPS      BPS     PER   PBR   POR`")
+    lines.append("`" + "-" * 48 + "`")
     for d in data:
         def _n(v, fmt):
             try:
@@ -389,10 +389,10 @@ def _fmt_valuation(data: list, label: str) -> str:
                 return "-"
         eps_s = _n(d.get("eps"), ">8,.0f")
         bps_s = _n(d.get("bps"), ">8,.0f")
-        dps_s = _n(d.get("dps"), ">8,.0f")
         per_s = _n(d.get("per"), ">6.1f")
         pbr_s = _n(d.get("pbr"), ">6.2f")
-        lines.append(f"`{d['stac_yymm']}  {eps_s}  {bps_s}  {dps_s}  {per_s}  {pbr_s}`")
+        por_s = _n(d.get("por"), ">6.1f")
+        lines.append(f"`{d['stac_yymm']}  {eps_s}  {bps_s}  {per_s}  {pbr_s}  {por_s}`")
     return "\n".join(lines)
 
 
@@ -400,21 +400,31 @@ async def _send_valuation(chat_id: int, code: str, name: str, ctx):
     """밸류에이션 (EPS/BPS → PER/PBR 계산)"""
     msg = await ctx.bot.send_message(chat_id, f"⏳ *{name}* 밸류에이션 조회 중…", parse_mode="Markdown")
     try:
-        annual  = kis_api.get_valuation_ratio(code, div="0")
-        dps_map = dart_api.get_dividend_per_share(code)
+        annual         = kis_api.get_valuation_ratio(code, div="0")
+        income_annual  = kis_api.get_income_statement(code, div="0")
+        income_map     = {d["period"]: d for d in income_annual}
 
-        # 주가 이력으로 PER/PBR 계산 (월봉, 기간말 종가 사용)
+        # 주가 이력으로 PER/PBR/POR 계산 (월봉, 기간말 종가 사용)
         start = (min(d["stac_yymm"] for d in annual)[:4] + "0101") if annual else "20040101"
         prices = kis_api.get_price_history(code, start, datetime.today().strftime("%Y%m%d"), period="M")
         price_by_ym = {p["date"][:6]: p["close"] for p in prices}
 
         for d in annual:
-            price = price_by_ym.get(d["stac_yymm"])
-            eps   = d["eps"]
-            bps   = d["bps"]
+            price      = price_by_ym.get(d["stac_yymm"])
+            eps        = d["eps"]
+            bps        = d["bps"]
+            inc        = income_map.get(d["stac_yymm"], {})
+            op_income  = inc.get("op_income")
+            net_income = inc.get("net_income")
             d["per"] = round(price / eps, 2) if price and eps and eps > 0 else None
             d["pbr"] = round(price / bps, 2) if price and bps and bps > 0 else None
-            d["dps"] = dps_map.get(d["stac_yymm"][:4])
+            # POR = 연말시총 / 영업이익
+            # 시총 = price × (net_income억원 × 1e8 / eps) → 1e8 상쇄
+            # POR = price × net_income / (eps × op_income)
+            if price and eps and eps > 0 and op_income and op_income > 0 and net_income:
+                d["por"] = round((price * net_income) / (eps * op_income), 2)
+            else:
+                d["por"] = None
 
         await ctx.bot.send_photo(chat_id,
             photo=charts.chart_valuation(annual, name),

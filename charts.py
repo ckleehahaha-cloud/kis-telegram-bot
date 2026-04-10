@@ -889,7 +889,7 @@ def chart_valuation(annual: list, name: str):
     fig.patch.set_facecolor("#1A1A2E")
     fig.suptitle(
         f"[밸류에이션]  {name}\n"
-        "EPS / BPS / DPS (원)  |  PER / PBR (배, 기간말 월봉 종가 기준)",
+        "EPS / BPS (원)  |  PER / PBR / POR (배, 기간말 월봉 종가 기준)",
         fontsize=13, color="white",
     )
 
@@ -899,8 +899,8 @@ def chart_valuation(annual: list, name: str):
     axes[1].set_title("BPS (주당순자산)", color="white", fontsize=11)
     _draw_panel(axes[1], annual, "bps", "BPS (원)", "#55EFC4", is_annual=True)
 
-    axes[2].set_title("DPS (주당배당금)", color="white", fontsize=11)
-    _draw_panel(axes[2], annual, "dps", "DPS (원)", "#FDCB6E", is_annual=True)
+    axes[2].set_title("POR (연말시총 / 영업이익)", color="white", fontsize=11)
+    _draw_panel(axes[2], annual, "por", "POR (배)", "#FDCB6E", is_annual=True)
 
     fig.subplots_adjust(top=0.92, hspace=0.5)
     return _buf()
