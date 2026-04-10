@@ -28,6 +28,9 @@ import kis_api
 import dart_api
 import charts
 import collector as _collector
+import yfinance as _yf
+import numpy as _np
+from RobustSTL import RobustSTL as _RobustSTL
 
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s – %(message)s",
@@ -581,10 +584,119 @@ async def _send_pricerange(chat_id: int, code: str, name: str, ctx):
         await ctx.bot.edit_message_text(f"❌ 오류: {e}", chat_id=chat_id, message_id=msg.message_id)
 
 
+async def _send_dupont(chat_id: int, code: str, name: str, ctx):
+    """DuPont 3-factor 분해 (연간 최근 10년)"""
+    msg = await ctx.bot.send_message(chat_id, f"⏳ *{name}* DuPont 분석 중…", parse_mode="Markdown")
+    try:
+        data = kis_api.get_dupont_data(code)
+        if not data:
+            await ctx.bot.edit_message_text(
+                f"❌ *{name}* DuPont 데이터를 가져올 수 없습니다.",
+                chat_id=chat_id, message_id=msg.message_id, parse_mode="Markdown")
+            return
+
+        await ctx.bot.send_photo(
+            chat_id,
+            photo=charts.chart_dupont(data, name),
+            caption=(
+                f"*{name}* | DuPont 분석 (연간)\n"
+                "ROE = 순이익률 × 총자산회전율 × 재무레버리지"
+            ),
+            parse_mode="Markdown",
+        )
+
+        lines = [f"*{name}* | DuPont Raw Data\n"]
+        lines.append("`연도   ROE(%)  순이익률(%)  자산회전율  레버리지`")
+        lines.append("`" + "─" * 48 + "`")
+        for d in data:
+            roe  = f"{d['roe']:>6.1f}%" if d.get("roe") is not None else f"{'N/A':>7}"
+            nm   = f"{d['net_margin']:>9.1f}%" if d.get("net_margin") is not None else f"{'N/A':>10}"
+            at   = f"{d['asset_turnover']:>8.2f}회"  if d.get("asset_turnover") is not None else f"{'N/A':>9}"
+            lv   = f"{d['leverage']:>7.2f}배"        if d.get("leverage") is not None else f"{'N/A':>8}"
+            lines.append(f"`{d['period']}  {roe}  {nm}  {at}  {lv}`")
+        await _send_text(ctx.bot, chat_id, "\n".join(lines))
+        await ctx.bot.delete_message(chat_id, msg.message_id)
+    except Exception as e:
+        logger.exception("DuPont 오류")
+        await ctx.bot.edit_message_text(f"❌ 오류: {e}", chat_id=chat_id, message_id=msg.message_id)
+
+
+async def _send_short(chat_id: int, code: str, name: str, ctx):
+    """공매도·대차잔고 추이 (최근 3개월)"""
+    msg = await ctx.bot.send_message(chat_id, f"⏳ *{name}* 공매도 데이터 조회 중…", parse_mode="Markdown")
+    try:
+        data = kis_api.get_short_history(code)
+        if not data:
+            await ctx.bot.edit_message_text(
+                f"❌ *{name}* 공매도 데이터를 불러올 수 없습니다.",
+                chat_id=chat_id, message_id=msg.message_id, parse_mode="Markdown")
+            return
+
+        await ctx.bot.send_photo(
+            chat_id,
+            photo=charts.chart_short(data, name),
+            caption=f"*{name}* | 공매도·대차잔고 추이 (최근 3개월)",
+            parse_mode="Markdown",
+        )
+
+        recent = data[-5:]
+        lines = [
+            f"*{name}* | 공매도 최근 5일\n",
+            "```",
+            f"{'날짜':>10} {'공매도비율':>8} {'대차잔고(천주)':>13}",
+            "-" * 34,
+        ]
+        for r in recent:
+            ratio = f"{r['short_ratio']:.1f}%" if r.get("short_ratio") is not None else "N/A"
+            loan  = f"{int(r['loan_qty'] // 1000):,}" if r.get("loan_qty") else "N/A"
+            lines.append(f"{r['date']:>10} {ratio:>8} {loan:>13}")
+        lines.append("```")
+        await _send_text(ctx.bot, chat_id, "\n".join(lines))
+        await ctx.bot.delete_message(chat_id, msg.message_id)
+    except Exception as e:
+        logger.exception("공매도 오류")
+        await ctx.bot.edit_message_text(f"❌ 오류: {e}", chat_id=chat_id, message_id=msg.message_id)
+
+
 async def _send_finance_all(chat_id: int, code: str, name: str, ctx):
-    """재무 전체: 손익 → 재무비율 → 밸류에이션 → 현금흐름 → 요약 → 배당 → 주가범위 순서로 전송"""
-    for fn in (_send_finance, _send_ratio, _send_valuation, _send_cashflow, _send_summary, _send_dividend, _send_pricerange):
+    """재무 전체: 손익 → 재무비율 → 밸류에이션 → 현금흐름 → 요약 → 배당 → 주가범위 → 공매도 순서로 전송"""
+    for fn in (_send_finance, _send_ratio, _send_valuation, _send_cashflow, _send_summary, _send_dividend, _send_pricerange, _send_short):
         await fn(chat_id, code, name, ctx)
+
+
+async def _send_volatility(chat_id: int, ctx):
+    """KOSPI RobustSTL 잔차 비율 (최근 60거래일)"""
+    msg = await ctx.bot.send_message(chat_id, "⏳ KOSPI 심리 변동 비율 분석 중… (수십 초 소요)", parse_mode="Markdown")
+    try:
+        def _compute():
+            data = _yf.download("^KS11", period="3y", progress=False)
+            close = data["Close"].dropna()
+            if hasattr(close, "iloc") and close.ndim > 1:
+                close = close.iloc[:, 0]
+            close_vals = close.values.astype(float)
+            dates_all  = [d.strftime("%m/%d") for d in close.index]
+
+            stl = _RobustSTL(close_vals, period=252, reg1=1.0, reg2=0.5, K=2, H=5)
+            stl.fit(iterations=1)
+
+            resid_ratio = (stl.resid / close_vals) * 100
+            dates60     = dates_all[-60:]
+            ratio60     = resid_ratio[-60:].tolist()
+            return dates60, ratio60
+
+        dates60, ratio60 = await asyncio.to_thread(_compute)
+
+        await ctx.bot.send_photo(
+            chat_id,
+            photo=charts.chart_volatility(dates60, ratio60),
+            caption="*KOSPI* | 심리 변동 비율 (Remainder Ratio) — 최근 60거래일\n"
+                    "양수(빨강)=추세 대비 과매수, 음수(파랑)=과매도",
+            parse_mode="Markdown",
+        )
+        await ctx.bot.delete_message(chat_id, msg.message_id)
+    except Exception as e:
+        logger.exception("변동성 분석 오류")
+        await ctx.bot.edit_message_text(f"❌ 오류: {e}", chat_id=chat_id, message_id=msg.message_id)
 
 
 # mode → 전송 함수 매핑
@@ -602,6 +714,8 @@ _SEND_FN = {
     "valuation":  _send_valuation,
     "summary":    _send_summary,
     "dividend":   _send_dividend,
+    "dupont":     _send_dupont,
+    "short":      _send_short,
 }
 
 
@@ -634,7 +748,9 @@ async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "`/i` `/intraday` — 당일수급\n"
         "`/e` `/estimate` — 추정수급\n"
         "`/v` `/volume` — 거래량\n"
-        "`/m` `/market` — 시장자금 _(종목 불필요)_\n\n"
+        "`/sh` `/short` — 공매도·대차잔고 추이 _(최근 3개월)_\n"
+        "`/m` `/market` — 시장자금 _(종목 불필요)_\n"
+        "`/volatility` — KOSPI 심리 변동 비율 _(종목 불필요)_\n\n"
         "*📊 재무*  예: `/fin 삼성전자`\n"
         "`/fin` `/finance` — 손익계산서\n"
         "`/r` `/ratio` — 재무비율\n"
@@ -643,7 +759,8 @@ async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "`/sum` `/summary` — 요약\n"
         "`/div` `/dividend` — 배당\n"
         "`/fa` `/financeall` — 재무 전체 _(fin·r·val·cf·sum·div·pr 순서대로)_\n"
-        "`/pr` `/pricerange` — 주가범위 _(EPS/DPS/주가Min·Max, 10년)_\n\n"
+        "`/pr` `/pricerange` — 주가범위 _(EPS/DPS/주가Min·Max, 10년)_\n"
+        "`/du` `/dupont` — DuPont 분석 _(ROE=순이익률×자산회전율×레버리지, 10년)_\n\n"
         "_종목명 직접 입력 또는 6자리 코드 → `/s` 동일_",
         parse_mode="Markdown",
     )
@@ -669,6 +786,8 @@ async def _cmd_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE, mode: str
         "dividend":  "/div",
         "finall":     "/fa",
         "pricerange": "/pr",
+        "dupont":     "/du",
+        "short":      "/sh",
     }
     if not ctx.args:
         await update.message.reply_text(
@@ -739,6 +858,17 @@ async def cmd_finance_all(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_pricerange(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await _cmd_handler(update, ctx, "pricerange")
+
+async def cmd_dupont(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await _cmd_handler(update, ctx, "dupont")
+
+async def cmd_short(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await _cmd_handler(update, ctx, "short")
+
+async def cmd_volatility(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not _is_allowed(update.effective_user.id):
+        return
+    await _send_volatility(update.effective_chat.id, ctx)
 
 # ══════════════════════════════════════════════════════════════
 #  메시지 핸들러 (종목명/코드 직접 입력 → 전체 차트)
@@ -931,6 +1061,11 @@ def main():
     app.add_handler(CommandHandler("fa",          cmd_finance_all))
     app.add_handler(CommandHandler("pricerange",  cmd_pricerange))
     app.add_handler(CommandHandler("pr",          cmd_pricerange))
+    app.add_handler(CommandHandler("dupont",      cmd_dupont))
+    app.add_handler(CommandHandler("du",          cmd_dupont))
+    app.add_handler(CommandHandler("short",       cmd_short))
+    app.add_handler(CommandHandler("sh",          cmd_short))
+    app.add_handler(CommandHandler("volatility",  cmd_volatility))
     app.add_handler(CommandHandler("collect",   cmd_collect))   # 수집기 제어
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(handle_callback, pattern=r"^stock:"))

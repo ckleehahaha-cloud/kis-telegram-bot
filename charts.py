@@ -1231,3 +1231,255 @@ def chart_price_range(data: list, name: str) -> io.BytesIO:
 
     fig.subplots_adjust(top=0.88, hspace=0.15)
     return _buf()
+
+
+# ══════════════════════════════════════════════════════════════
+#  KOSPI 잔차 비율 (Remainder Ratio) — 최근 60거래일
+# ══════════════════════════════════════════════════════════════
+def chart_volatility(dates, resid_ratio) -> io.BytesIO:
+    """
+    KOSPI RobustSTL 잔차 비율(%) 막대 차트 — 최근 60거래일.
+    양수(과매수) = 빨강, 음수(과매도) = 파랑.
+    """
+    if not dates or not resid_ratio:
+        return _empty_chart("데이터 없음", "[KOSPI 심리 변동 비율]")
+
+    x = np.arange(len(dates))
+    vals = np.array(resid_ratio, dtype=float)
+    colors = ["#E74C3C" if v >= 0 else "#3498DB" for v in vals]
+
+    fig, ax = plt.subplots(figsize=(16, 6))
+    fig.patch.set_facecolor("#1A1A2E")
+    ax.set_facecolor("#16213E")
+
+    ax.bar(x, vals, color=colors, alpha=0.85, width=0.8)
+    ax.axhline(0, color="white", linewidth=0.8, alpha=0.5)
+
+    # ±1σ 기준선
+    sigma = float(np.std(vals))
+    ax.axhline( sigma, color="#F1C40F", linewidth=1.0, linestyle="--", alpha=0.6, label=f"+1σ ({sigma:.2f}%)")
+    ax.axhline(-sigma, color="#A29BFE", linewidth=1.0, linestyle="--", alpha=0.6, label=f"−1σ ({-sigma:.2f}%)")
+
+    # x축: 날짜 레이블 (10개 간격으로만 표시)
+    step = max(1, len(dates) // 10)
+    tick_pos = x[::step]
+    tick_lbl = [dates[i] for i in tick_pos]
+    ax.set_xticks(tick_pos)
+    ax.set_xticklabels(tick_lbl, rotation=45, ha="right", fontsize=8, color="gray")
+
+    ax.set_ylabel("잔차 비율 (%)", color="white", fontsize=9)
+    ax.tick_params(axis="y", colors="gray", labelsize=8)
+    ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: f"{v:.2f}%"))
+    for spine in ax.spines.values():
+        spine.set_edgecolor("#2C3E50")
+
+    ax.legend(facecolor="#2C3E50", labelcolor="white", fontsize=8, loc="upper left")
+    fig.suptitle("KOSPI  |  심리 변동 비율 (Remainder Ratio)  — 최근 60거래일",
+                 color="white", fontsize=13, y=0.98)
+    fig.subplots_adjust(bottom=0.18, top=0.92)
+    return _buf()
+
+
+# ══════════════════════════════════════════════════════════════
+#  DuPont 분해 (연간 최근 10년)
+# ══════════════════════════════════════════════════════════════
+def chart_dupont(data: list, name: str) -> io.BytesIO:
+    """
+    DuPont 3-factor 시각화 (연간, 최근 10년)
+
+    Layout (GridSpec 2×3):
+      Row 0 (span 3 cols): ROE 막대 + 추세선
+      Row 1 col 0: 순이익률 (%)
+      Row 1 col 1: 총자산회전율 (회)
+      Row 1 col 2: 재무레버리지 (배)
+    """
+    if not data:
+        return _empty_chart("DuPont 데이터 없음", f"[DuPont] {name}")
+
+    BG     = "#1A1A2E"
+    AX_BG  = "#16213E"
+    GRAY   = "#888888"
+    WHITE  = "#FFFFFF"
+    GOLD   = "#F1C40F"
+    RED    = "#E74C3C"
+    BLUE   = "#3498DB"
+    GREEN  = "#2ECC71"
+    ORANGE = "#E67E22"
+    PURPLE = "#A29BFE"
+
+    years = [d["period"] for d in data]
+    x     = np.arange(len(years))
+
+    roe_vals = [d.get("roe") or 0.0 for d in data]
+    nm_vals  = [d.get("net_margin")     for d in data]   # may be None
+    at_vals  = [d.get("asset_turnover") for d in data]   # may be None
+    lv_vals  = [d.get("leverage") or 0.0 for d in data]
+
+    fig = plt.figure(figsize=(16, 10))
+    fig.patch.set_facecolor(BG)
+    gs = fig.add_gridspec(2, 3, height_ratios=[1.1, 1.0], hspace=0.55, wspace=0.35)
+
+    # ── 공통 ax 설정 헬퍼 ────────────────────────────────────────
+    def _style(ax, title, ylabel, ycolor=WHITE):
+        ax.set_facecolor(AX_BG)
+        ax.set_title(title, color=WHITE, fontsize=11, pad=6)
+        ax.set_ylabel(ylabel, color=ycolor, fontsize=9)
+        ax.set_xticks(x)
+        ax.set_xticklabels(years, fontsize=8, color=GRAY,
+                           rotation=40 if len(years) > 7 else 0, ha="right")
+        ax.tick_params(colors=GRAY, labelsize=8)
+        for sp in ax.spines.values():
+            sp.set_edgecolor("#2C3E50")
+
+    def _bar_label(ax, xpos, vals, fmt="{:.1f}", offset_ratio=0.03):
+        ymax = max((abs(v) for v in vals if v is not None), default=1) or 1
+        for xi, v in zip(xpos, vals):
+            if v is None:
+                continue
+            yoff = ymax * offset_ratio * (1 if v >= 0 else -1)
+            ax.text(xi, v + yoff, fmt.format(v),
+                    ha="center", va="bottom" if v >= 0 else "top",
+                    color=WHITE, fontsize=7)
+
+    # ── Panel 0: ROE (full-width) ─────────────────────────────
+    ax0 = fig.add_subplot(gs[0, :])
+    roe_colors = [RED if v >= 0 else BLUE for v in roe_vals]
+    ax0.bar(x, roe_vals, color=roe_colors, alpha=0.8, width=0.6)
+    ax0.axhline(0, color=WHITE, linewidth=0.6, alpha=0.4)
+    # 추세선
+    valid_x = [xi for xi, v in enumerate(roe_vals) if v is not None]
+    valid_y = [v  for v in roe_vals if v is not None]
+    if len(valid_x) >= 2:
+        ax0.plot(valid_x, valid_y, color=GOLD, linewidth=2,
+                 marker="o", markersize=4, alpha=0.9, label="ROE 추이")
+        ax0.legend(facecolor="#2C3E50", labelcolor=WHITE, fontsize=8, loc="upper left")
+    _bar_label(ax0, x, roe_vals, "{:.1f}%")
+    ax0.yaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: f"{v:.1f}%"))
+    _style(ax0, "ROE — 자기자본이익률 (%)", "ROE (%)")
+
+    # ── Panel 1: 순이익률 ─────────────────────────────────────
+    ax1 = fig.add_subplot(gs[1, 0])
+    nm_colors = [RED if (v or 0) >= 0 else BLUE for v in nm_vals]
+    nm_plot   = [v if v is not None else 0.0 for v in nm_vals]
+    ax1.bar(x, nm_plot, color=nm_colors, alpha=0.8, width=0.6)
+    ax1.axhline(0, color=WHITE, linewidth=0.5, alpha=0.3)
+    _bar_label(ax1, x, nm_vals, "{:.1f}%")
+    ax1.yaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: f"{v:.1f}%"))
+    _style(ax1, "① 순이익률\n(순이익 / 매출)", "(%)", RED)
+
+    # ── Panel 2: 총자산회전율 ─────────────────────────────────
+    ax2 = fig.add_subplot(gs[1, 1])
+    at_plot = [v if v is not None else 0.0 for v in at_vals]
+    ax2.bar(x, at_plot, color=GREEN, alpha=0.8, width=0.6)
+    ax2.axhline(0, color=WHITE, linewidth=0.5, alpha=0.3)
+    _bar_label(ax2, x, at_vals, "{:.2f}회")
+    ax2.yaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: f"{v:.2f}"))
+    _style(ax2, "② 총자산회전율\n(매출 / 총자산)", "(회)", GREEN)
+
+    # ── Panel 3: 재무레버리지 ─────────────────────────────────
+    ax3 = fig.add_subplot(gs[1, 2])
+    ax3.bar(x, lv_vals, color=ORANGE, alpha=0.8, width=0.6)
+    ax3.axhline(1, color=PURPLE, linewidth=1.0, linestyle="--",
+                alpha=0.6, label="레버리지=1 (무부채)")
+    ax3.legend(facecolor="#2C3E50", labelcolor=WHITE, fontsize=7, loc="upper left")
+    _bar_label(ax3, x, lv_vals, "{:.2f}배")
+    ax3.yaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: f"{v:.2f}"))
+    _style(ax3, "③ 재무레버리지\n(총자산 / 자기자본)", "(배)", ORANGE)
+
+    fig.suptitle(
+        f"[DuPont 분석]  {name}\n"
+        "ROE  =  순이익률 ①  ×  총자산회전율 ②  ×  재무레버리지 ③",
+        color=WHITE, fontsize=13, y=0.99,
+    )
+    return _buf()
+
+
+# ══════════════════════════════════════════════════════════════
+#  공매도·대차잔고 추이 (최근 3개월)
+# ══════════════════════════════════════════════════════════════
+def chart_short(data: list, name: str) -> io.BytesIO:
+    """
+    3-row subplot (height_ratios=[3,2,2]), shared x-axis:
+      Row0 — 종가 라인 (#F1C40F)
+      Row1 — 공매도비율 막대 (#E74C3C) + 5일 이동평균선 (white dashed)
+      Row2 — 대차잔고수량 라인 (#9B59B6) + fill_between
+    """
+    if not data:
+        return _empty_chart("공매도 데이터 없음", f"[공매도] {name}")
+
+    BG    = "#1A1A2E"
+    AX_BG = "#16213E"
+    GRAY  = "#888888"
+    WHITE = "#FFFFFF"
+    GOLD  = "#F1C40F"
+    RED   = "#E74C3C"
+    PURP  = "#9B59B6"
+
+    dates      = [d["date"] for d in data]
+    close_vals = [d.get("close")       or 0   for d in data]
+    ratio_vals = [d.get("short_ratio") or 0.0 for d in data]
+    loan_vals  = [d.get("loan_qty")    or 0   for d in data]
+
+    n = len(dates)
+    x = np.arange(n)
+
+    # x 레이블: MM-DD, ~15일 간격
+    tick_step = max(1, n // 6)
+    tick_pos  = x[::tick_step]
+    tick_lbl  = [dates[i][4:6] + "-" + dates[i][6:] for i in tick_pos]
+
+    fig, axes = plt.subplots(
+        3, 1, figsize=(12, 9), sharex=True,
+        gridspec_kw={"height_ratios": [3, 2, 2]},
+    )
+    fig.patch.set_facecolor(BG)
+    fig.suptitle(f"[공매도·대차잔고]  {name}  —  최근 {n}거래일",
+                 color=WHITE, fontsize=13, y=0.99)
+
+    def _ax_style(ax, ylabel, ycolor=GRAY):
+        ax.set_facecolor(AX_BG)
+        ax.set_ylabel(ylabel, color=ycolor, fontsize=9)
+        ax.tick_params(colors=GRAY, labelsize=8)
+        ax.yaxis.label.set_color(ycolor)
+        for sp in ax.spines.values():
+            sp.set_edgecolor("#2C3E50")
+
+    # ── Row0: 종가 ───────────────────────────────────────────
+    ax0 = axes[0]
+    ax0.plot(x, close_vals, color=GOLD, linewidth=1.8, label="종가")
+    ax0.fill_between(x, close_vals, alpha=0.08, color=GOLD)
+    ax0.set_title("종가 (원)", color=WHITE, fontsize=10, pad=4)
+    ax0.yaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: f"{int(v):,}"))
+    _ax_style(ax0, "원", GOLD)
+    ax0.legend(facecolor="#2C3E50", labelcolor=WHITE, fontsize=8, loc="upper left")
+
+    # ── Row1: 공매도비율 ─────────────────────────────────────
+    ax1 = axes[1]
+    ax1.bar(x, ratio_vals, color=RED, alpha=0.7, width=0.8, label="공매도비율")
+    # 5일 이동평균
+    ratio_arr = np.array(ratio_vals, dtype=float)
+    if n >= 5:
+        ma5 = np.convolve(ratio_arr, np.ones(5) / 5, mode="valid")
+        ax1.plot(np.arange(4, n), ma5, color=WHITE, linewidth=1.2,
+                 linestyle="--", label="5일 MA")
+    ax1.set_title("공매도비율 (%)", color=WHITE, fontsize=10, pad=4)
+    ax1.yaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: f"{v:.1f}%"))
+    _ax_style(ax1, "%", RED)
+    ax1.legend(facecolor="#2C3E50", labelcolor=WHITE, fontsize=8, loc="upper left")
+
+    # ── Row2: 대차잔고수량 ───────────────────────────────────
+    ax2 = axes[2]
+    loan_arr = np.array(loan_vals, dtype=float)
+    ax2.plot(x, loan_arr, color=PURP, linewidth=1.8, label="대차잔고")
+    ax2.fill_between(x, 0, loan_arr, alpha=0.2, color=PURP)
+    ax2.set_title("대차잔고 (주)", color=WHITE, fontsize=10, pad=4)
+    ax2.yaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: f"{int(v):,}"))
+    _ax_style(ax2, "주", PURP)
+    ax2.legend(facecolor="#2C3E50", labelcolor=WHITE, fontsize=8, loc="upper left")
+
+    # x축 공통
+    ax2.set_xticks(tick_pos)
+    ax2.set_xticklabels(tick_lbl, rotation=45, ha="right", fontsize=8, color=GRAY)
+
+    fig.subplots_adjust(top=0.95, hspace=0.12, bottom=0.10)
+    return _buf()

@@ -811,6 +811,175 @@ def get_price_range_history(stock_code: str) -> list[dict]:
 
 
 # ══════════════════════════════════════════════════════════════
+#  DuPont 분해 (연간 최근 10년)
+#  데이터 소스: get_income_statement + get_financial_ratio
+# ══════════════════════════════════════════════════════════════
+def get_dupont_data(stock_code: str) -> list[dict]:
+    """
+    DuPont 3-factor 분해 (연간)
+      ROE = 순이익률 × 총자산회전율 × 재무레버리지
+
+    반환: [{"period": "2023", "roe": float, "net_margin": float,
+             "asset_turnover": float|None, "leverage": float}, ...]
+
+    계산 방법:
+      - 순이익률     = net_income / sales × 100  (%)
+      - 재무레버리지 = 1 + debt_ratio / 100       (총자산 / 자기자본)
+      - 총자산회전율 = (sales × ROE/100) / (net_income × leverage)  (회, 대수적 동치)
+        * net_income = 0 이거나 leverage = 0이면 None
+    """
+    income  = get_income_statement(stock_code, "0")
+    time.sleep(0.3)
+    fin_ratio = get_financial_ratio(stock_code, "0")
+
+    # 손익계산서 period 키: "202312" → 연도 "2023"
+    inc_map = {}
+    for d in income:
+        yr = d["period"][:4]
+        inc_map[yr] = d   # 같은 연도 중 마지막 값(12월 결산) 사용
+
+    result = []
+    cutoff_yr = str(datetime.today().year - 11)  # 최근 10년
+
+    for r in fin_ratio:
+        yr = r["period"][:4]
+        if yr <= cutoff_yr:
+            continue
+        inc = inc_map.get(yr)
+        if not inc:
+            continue
+
+        sales      = inc.get("sales")      or 0.0
+        net_income = inc.get("net_income") or 0.0
+        roe        = r.get("roe")          or 0.0
+        debt_ratio = r.get("debt_ratio")   or 0.0
+
+        net_margin = (net_income / sales * 100) if sales else None
+        leverage   = 1.0 + debt_ratio / 100.0
+
+        # 총자산회전율: 매출 / 총자산  ≡  (sales × ROE/100) / (net_income × leverage)
+        if net_income and leverage:
+            asset_turnover = (sales * roe / 100.0) / (net_income * leverage)
+        else:
+            asset_turnover = None
+
+        result.append({
+            "period":         yr,
+            "roe":            roe,
+            "net_margin":     net_margin,
+            "asset_turnover": asset_turnover,
+            "leverage":       leverage,
+        })
+
+    # 연도 중복 제거(동일 연도 최초 등장 유지) 후 정렬
+    seen = set()
+    deduped = []
+    for d in sorted(result, key=lambda x: x["period"]):
+        if d["period"] not in seen:
+            seen.add(d["period"])
+            deduped.append(d)
+    return deduped
+
+
+# ══════════════════════════════════════════════════════════════
+#  공매도·대차잔고 (최근 3개월)
+#  1차 시도: FHPST04010000 / FHPST04020000
+#  fallback:  FHPST01010400 / FHPST01020400
+# ══════════════════════════════════════════════════════════════
+def get_short_history(stock_code: str, days: int = 90) -> list[dict]:
+    """
+    공매도 일별 추이 + 대차잔고를 날짜 기준으로 병합하여 반환.
+    반환: [{"date", "close", "short_qty", "short_ratio", "loan_qty", "loan_amt"}, ...]
+    """
+    end_dt   = datetime.today()
+    start_dt = end_dt - timedelta(days=days)
+    start    = start_dt.strftime("%Y%m%d")
+    end      = end_dt.strftime("%Y%m%d")
+
+    base_params = {
+        "FID_INPUT_ISCD":   stock_code,
+        "FID_INPUT_DATE_1": start,
+        "FID_INPUT_DATE_2": end,
+    }
+
+    # ── 1. 공매도 일별 추이 ────────────────────────────────────
+    short_map: dict = {}
+    for tr_id in ("FHPST04010000", "FHPST01010400"):
+        try:
+            url  = f"{BASE_URL}/uapi/domestic-stock/v1/quotations/short-sale"
+            resp = requests.get(url, headers=_headers(tr_id), params=base_params, timeout=10)
+            if resp.status_code == 404:
+                logger.info("공매도 TR %s → 404, fallback", tr_id)
+                continue
+            resp.raise_for_status()
+            body = resp.json()
+            if body.get("rt_cd") != "0":
+                logger.warning("공매도 TR %s 오류: %s", tr_id, body.get("msg1"))
+                continue
+            logger.info("공매도 TR %s 사용", tr_id)
+            for r in body.get("output") or []:
+                date = r.get("stck_bsop_date", "")
+                if not date:
+                    continue
+                vol      = _int(r.get("acml_vol"))
+                smsl_qty = _int(r.get("smsl_qty"))
+                short_map[date] = {
+                    "close":       _int(r.get("stck_clpr")),
+                    "short_qty":   smsl_qty,
+                    "short_amt":   _int(r.get("smsl_tr_pbmn")),
+                    "short_ratio": round(smsl_qty / vol * 100, 2) if vol else None,
+                }
+            break
+        except Exception as e:
+            logger.error("공매도 TR %s 예외: %s", tr_id, e)
+
+    time.sleep(0.3)
+
+    # ── 2. 대차잔고 ────────────────────────────────────────────
+    loan_map: dict = {}
+    for tr_id in ("FHPST04020000", "FHPST01020400"):
+        try:
+            url  = f"{BASE_URL}/uapi/domestic-stock/v1/quotations/lending-balance"
+            resp = requests.get(url, headers=_headers(tr_id), params=base_params, timeout=10)
+            if resp.status_code == 404:
+                logger.info("대차잔고 TR %s → 404, fallback", tr_id)
+                continue
+            resp.raise_for_status()
+            body = resp.json()
+            if body.get("rt_cd") != "0":
+                logger.warning("대차잔고 TR %s 오류: %s", tr_id, body.get("msg1"))
+                continue
+            logger.info("대차잔고 TR %s 사용", tr_id)
+            for r in body.get("output") or []:
+                date = r.get("stck_bsop_date", "")
+                if not date:
+                    continue
+                loan_map[date] = {
+                    "loan_qty": _int(r.get("loan_rmnd")),
+                    "loan_amt": _int(r.get("loan_rmnd_amt")),
+                }
+            break
+        except Exception as e:
+            logger.error("대차잔고 TR %s 예외: %s", tr_id, e)
+
+    # ── 3. 날짜 기준 병합 ──────────────────────────────────────
+    all_dates = sorted(set(short_map) | set(loan_map))
+    result = []
+    for date in all_dates:
+        s = short_map.get(date, {})
+        l = loan_map.get(date, {})
+        result.append({
+            "date":        date,
+            "close":       s.get("close"),
+            "short_qty":   s.get("short_qty"),
+            "short_ratio": s.get("short_ratio"),
+            "loan_qty":    l.get("loan_qty"),
+            "loan_amt":    l.get("loan_amt"),
+        })
+    return result
+
+
+# ══════════════════════════════════════════════════════════════
 #  선행 컨센서스 PER
 #  TR: FHKST01010700  endpoint: search-stock-info
 # ══════════════════════════════════════════════════════════════
