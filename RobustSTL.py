@@ -1,6 +1,6 @@
 import numpy as np
-import cvxpy as cp
 import scipy.sparse as sp
+from scipy.optimize import linprog
 
 
 class RobustSTL:
@@ -35,30 +35,91 @@ class RobustSTL:
         return y_prime
 
     def extract_trend(self, y_prime, T, lambda1, lambda2):
-        """Step 2: L1-norm(LAD Regression) 최적화를 통한 강력한 추세 추출"""
+        """Step 2: L1-norm(LAD Regression) 최적화를 통한 강력한 추세 추출
+
+        LP reformulation:
+          min  1ᵀu + λ₁·1ᵀv + λ₂·1ᵀw
+          s.t.  u ≥  g - M·∇τ,  u ≥ -(g - M·∇τ)   (||g - M∇τ||₁)
+                v ≥  ∇τ,         v ≥ -∇τ             (||∇τ||₁)
+                w ≥  D·∇τ,       w ≥ -D·∇τ           (||D∇τ||₁)
+                u, v, w ≥ 0;  ∇τ free
+        Decision vector x = [∇τ (Np), u (K), v (Np), w (Nd)]
+        where Np = N-1, K = N-T, Nd = N-2.
+        """
         N = len(y_prime)
         g = y_prime[T:] - y_prime[:-T]
 
-        diagonals_M = [np.ones(N - T) for _ in range(T)]
+        Np = N - 1   # size of ∇τ
+        K  = N - T   # rows of M  (= len(g))
+        Nd = N - 2   # rows of D
+
+        diagonals_M = [np.ones(K) for _ in range(T)]
         offsets_M = list(range(T))
-        M = sp.diags(diagonals_M, offsets_M, shape=(N - T, N - 1), format='csr')
+        M = sp.diags(diagonals_M, offsets_M, shape=(K, Np), format='csr')
 
-        diagonals_D = [-np.ones(N - 2), np.ones(N - 2)]
+        diagonals_D = [-np.ones(Nd), np.ones(Nd)]
         offsets_D = [0, 1]
-        D = sp.diags(diagonals_D, offsets_D, shape=(N - 2, N - 1), format='csr')
+        D = sp.diags(diagonals_D, offsets_D, shape=(Nd, Np), format='csr')
 
-        nabla_tau = cp.Variable(N - 1)
-        objective = cp.Minimize(
-            cp.norm1(g - M @ nabla_tau) +
-            lambda1 * cp.norm1(nabla_tau) +
-            lambda2 * cp.norm1(D @ nabla_tau)
-        )
-        prob = cp.Problem(objective)
-        prob.solve(verbose=False)
+        # Objective: min 1ᵀu + λ₁·1ᵀv + λ₂·1ᵀw  (∇τ coefficients = 0)
+        c = np.concatenate([
+            np.zeros(Np),
+            np.ones(K),
+            lambda1 * np.ones(Np),
+            lambda2 * np.ones(Nd),
+        ])
 
-        nabla_tau_val = nabla_tau.value
-        if nabla_tau_val is None:
-            nabla_tau_val = np.zeros(N - 1)
+        # Build A_ub · x ≤ b_ub in sparse blocks
+        # Indices: ∇τ[0:Np], u[Np:Np+K], v[Np+K:Np+K+Np], w[Np+K+Np:end]
+        z_Kp  = sp.csr_matrix((K,  Np))
+        z_Kk  = sp.csr_matrix((K,  K))
+        z_Knp = sp.csr_matrix((K,  Np))
+        z_Kd  = sp.csr_matrix((K,  Nd))
+
+        z_Npp = sp.csr_matrix((Np, Np))
+        z_Npk = sp.csr_matrix((Np, K))
+        z_Npd = sp.csr_matrix((Np, Nd))
+        I_Np  = sp.eye(Np, format='csr')
+
+        z_Dp  = sp.csr_matrix((Nd, Np))
+        z_Dk  = sp.csr_matrix((Nd, K))
+        z_Dnp = sp.csr_matrix((Nd, Np))
+        I_Nd  = sp.eye(Nd, format='csr')
+        I_K   = sp.eye(K,  format='csr')
+
+        # Row block 1:  M·∇τ - u ≤ g   →  [M | -I_K | 0 | 0]
+        # Row block 2: -M·∇τ - u ≤ -g   →  [-M | -I_K | 0 | 0]
+        # Row block 3:  ∇τ - v ≤ 0      →  [I | 0 | -I | 0]
+        # Row block 4: -∇τ - v ≤ 0      →  [-I | 0 | -I | 0]
+        # Row block 5:  D·∇τ - w ≤ 0    →  [D | 0 | 0 | -I_Nd]
+        # Row block 6: -D·∇τ - w ≤ 0    →  [-D | 0 | 0 | -I_Nd]
+
+        A_ub = sp.bmat([
+            [ M,  -I_K,  z_Knp,  z_Kd],
+            [-M,  -I_K,  z_Knp,  z_Kd],
+            [ I_Np, z_Npk, -I_Np, z_Npd],
+            [-I_Np, z_Npk, -I_Np, z_Npd],
+            [ D,  z_Dk,  z_Dp,  -I_Nd],
+            [-D,  z_Dk,  z_Dp,  -I_Nd],
+        ], format='csr')
+
+        b_ub = np.concatenate([g, -g,
+                               np.zeros(Np), np.zeros(Np),
+                               np.zeros(Nd), np.zeros(Nd)])
+
+        # Bounds: ∇τ free, u/v/w ≥ 0
+        bounds = ([(None, None)] * Np +
+                  [(0, None)] * K  +
+                  [(0, None)] * Np +
+                  [(0, None)] * Nd)
+
+        res = linprog(c, A_ub=A_ub, b_ub=b_ub, bounds=bounds, method='highs',
+                      options={'disp': False})
+
+        if res.success:
+            nabla_tau_val = res.x[:Np]
+        else:
+            nabla_tau_val = np.zeros(Np)
 
         tau_r = np.zeros(N)
         tau_r[1:] = np.cumsum(nabla_tau_val)

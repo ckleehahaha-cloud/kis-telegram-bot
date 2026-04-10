@@ -1,7 +1,7 @@
 # KIS Telegram Bot
 
 한국투자증권(KIS) Open API + DART OpenAPI를 이용한 주식 정보 텔레그램 봇.
-투자자 수급, 프로그램 매매, 공매도·대차잔고, 손익계산서, 재무비율, 밸류에이션(PER/POR/PBR),
+투자자 수급, 프로그램 매매, 손익계산서, 재무비율, 밸류에이션(PER/POR/PBR),
 현금흐름표, DuPont 분석, KOSPI 심리 변동 비율 등을 차트 이미지로 전송합니다.
 
 ---
@@ -101,14 +101,13 @@ python collector.py
 | `/i 삼성전자` | `/intraday` | 당일 시간대별 투자자 수급 차트 |
 | `/e 삼성전자` | `/estimate` | 장중 외국인/기관 잠정 추정 수급 (장중만 제공) |
 | `/v 삼성전자` | `/volume` | 가격대별 거래량 분포 |
-| `/sh 삼성전자` | `/short` | 공매도·대차잔고 추이 차트 (최근 3개월) |
 
 ### 📈 시장 — 종목명 불필요
 
 | 명령어 | 별칭 | 설명 |
 |--------|------|------|
 | `/m` | `/market` | 시장 자금 동향 (예탁금/신용융자/미수금/선물예수금) |
-| `/volatility` | — | KOSPI 심리 변동 비율 — 최근 60거래일 ([상세](#volatility)) |
+| `/volatility` | — | KOSPI 심리 변동 비율 — 최근 3개월 ([상세](#volatility)) |
 
 ### 📊 재무 — 종목명 필요
 
@@ -122,23 +121,13 @@ python collector.py
 | `/div 삼성전자` | `/dividend` | 배당 이력 차트 (DPS/수익률/배당성향, 최근 10년) |
 | `/pr 삼성전자` | `/pricerange` | 주가범위 차트 (EPS/DPS/주가Min·Max/연말종가, 최근 10년) |
 | `/du 삼성전자` | `/dupont` | DuPont 분석 — ROE 3요소 분해 ([상세](#dupont)) |
-| `/fa 삼성전자` | `/financeall` | 재무 전체 — fin·r·val·cf·sum·div·pr·sh 순서로 실행 |
+| `/fa 삼성전자` | `/financeall` | 재무 전체 — fin·r·val·cf·sum·div·pr 순서로 실행 |
 
 > 종목명 또는 6자리 종목코드를 직접 입력해도 `/s` 와 동일하게 동작합니다.
 
 ---
 
 ## 명령어 상세
-
-### /short — 공매도·대차잔고 추이 <a name="short"></a>
-
-3행 공유 x축 차트 (최근 3개월):
-
-- **Row 1** — 종가 라인
-- **Row 2** — 공매도비율(%) 막대 + 5일 이동평균선
-- **Row 3** — 대차잔고 수량 라인 + fill
-
-공매도비율 = 공매도수량 / 거래량 × 100
 
 ### /volatility — KOSPI 심리 변동 비율 <a name="volatility"></a>
 
@@ -152,8 +141,9 @@ RobustSTL(2018 논문) 알고리즘으로 **추세 / 계절성 / 잔차**로 분
 추세·계절성을 제거한 뒤 남은 심리·노이즈 성분의 비중으로,
 **양수(빨강)** = 추세 대비 과매수, **음수(파랑)** = 과매도를 의미합니다.
 ±1σ 점선으로 과도한 편차 구간을 표시합니다.
+차트 표시 범위는 **최근 3개월**입니다.
 
-> cvxpy L1 최적화 포함으로 응답까지 **수십 초** 소요될 수 있습니다.
+> `scipy.optimize.linprog`(HiGHS) L1 최적화 포함으로 응답까지 **수십 초** 소요될 수 있습니다.
 
 ### /dupont — DuPont 분석 <a name="dupont"></a>
 
@@ -216,7 +206,6 @@ kis_telegram_bot/
 | 데이터 | 소스 |
 |--------|------|
 | 수급, 프로그램 매매, 현재가, 주가 이력 | KIS OpenAPI |
-| 공매도 일별 추이, 대차잔고 | KIS OpenAPI |
 | 손익계산서, 재무비율, 밸류에이션 (EPS/BPS/PER/POR/PBR) | KIS OpenAPI |
 | 주당배당금 (DPS), 현금흐름표 | DART OpenAPI |
 | KOSPI 심리 변동 비율 (RobustSTL) | yfinance (`^KS11`) |
@@ -230,6 +219,5 @@ kis_telegram_bot/
 - `/cf`, `/pr`, `/div` 명령어는 DART API Key가 없으면 동작하지 않습니다.
 - `/cf` 는 연간 5회 + 분기 최대 20회 DART 병렬 호출로 조회합니다.
 - `/volatility` 는 cvxpy L1 최적화 포함으로 수십 초 소요될 수 있습니다.
-- `/sh` 공매도 TR(`FHPST04010000`)이 404 응답 시 fallback TR(`FHPST01010400`)을 시도합니다.
 - 모의투자(`KIS_IS_REAL=False`) 환경에서는 일부 TR이 지원되지 않을 수 있습니다.
 - `config.py` 는 절대 커밋하지 마세요 (API 키 포함).

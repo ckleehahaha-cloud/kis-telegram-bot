@@ -1234,11 +1234,11 @@ def chart_price_range(data: list, name: str) -> io.BytesIO:
 
 
 # ══════════════════════════════════════════════════════════════
-#  KOSPI 잔차 비율 (Remainder Ratio) — 최근 60거래일
+#  KOSPI 잔차 비율 (Remainder Ratio) — 최근 3개월
 # ══════════════════════════════════════════════════════════════
 def chart_volatility(dates, resid_ratio) -> io.BytesIO:
     """
-    KOSPI RobustSTL 잔차 비율(%) 막대 차트 — 최근 60거래일.
+    KOSPI RobustSTL 잔차 비율(%) 막대 차트 — 최근 3개월.
     양수(과매수) = 빨강, 음수(과매도) = 파랑.
     """
     if not dates or not resid_ratio:
@@ -1274,7 +1274,8 @@ def chart_volatility(dates, resid_ratio) -> io.BytesIO:
         spine.set_edgecolor("#2C3E50")
 
     ax.legend(facecolor="#2C3E50", labelcolor="white", fontsize=8, loc="upper left")
-    fig.suptitle("KOSPI  |  심리 변동 비율 (Remainder Ratio)  — 최근 60거래일",
+    n = len(dates)
+    fig.suptitle(f"KOSPI  |  심리 변동 비율 (Remainder Ratio)  — 최근 3개월 ({n}거래일)",
                  color="white", fontsize=13, y=0.98)
     fig.subplots_adjust(bottom=0.18, top=0.92)
     return _buf()
@@ -1393,93 +1394,3 @@ def chart_dupont(data: list, name: str) -> io.BytesIO:
     )
     return _buf()
 
-
-# ══════════════════════════════════════════════════════════════
-#  공매도·대차잔고 추이 (최근 3개월)
-# ══════════════════════════════════════════════════════════════
-def chart_short(data: list, name: str) -> io.BytesIO:
-    """
-    3-row subplot (height_ratios=[3,2,2]), shared x-axis:
-      Row0 — 종가 라인 (#F1C40F)
-      Row1 — 공매도비율 막대 (#E74C3C) + 5일 이동평균선 (white dashed)
-      Row2 — 대차잔고수량 라인 (#9B59B6) + fill_between
-    """
-    if not data:
-        return _empty_chart("공매도 데이터 없음", f"[공매도] {name}")
-
-    BG    = "#1A1A2E"
-    AX_BG = "#16213E"
-    GRAY  = "#888888"
-    WHITE = "#FFFFFF"
-    GOLD  = "#F1C40F"
-    RED   = "#E74C3C"
-    PURP  = "#9B59B6"
-
-    dates      = [d["date"] for d in data]
-    close_vals = [d.get("close")       or 0   for d in data]
-    ratio_vals = [d.get("short_ratio") or 0.0 for d in data]
-    loan_vals  = [d.get("loan_qty")    or 0   for d in data]
-
-    n = len(dates)
-    x = np.arange(n)
-
-    # x 레이블: MM-DD, ~15일 간격
-    tick_step = max(1, n // 6)
-    tick_pos  = x[::tick_step]
-    tick_lbl  = [dates[i][4:6] + "-" + dates[i][6:] for i in tick_pos]
-
-    fig, axes = plt.subplots(
-        3, 1, figsize=(12, 9), sharex=True,
-        gridspec_kw={"height_ratios": [3, 2, 2]},
-    )
-    fig.patch.set_facecolor(BG)
-    fig.suptitle(f"[공매도·대차잔고]  {name}  —  최근 {n}거래일",
-                 color=WHITE, fontsize=13, y=0.99)
-
-    def _ax_style(ax, ylabel, ycolor=GRAY):
-        ax.set_facecolor(AX_BG)
-        ax.set_ylabel(ylabel, color=ycolor, fontsize=9)
-        ax.tick_params(colors=GRAY, labelsize=8)
-        ax.yaxis.label.set_color(ycolor)
-        for sp in ax.spines.values():
-            sp.set_edgecolor("#2C3E50")
-
-    # ── Row0: 종가 ───────────────────────────────────────────
-    ax0 = axes[0]
-    ax0.plot(x, close_vals, color=GOLD, linewidth=1.8, label="종가")
-    ax0.fill_between(x, close_vals, alpha=0.08, color=GOLD)
-    ax0.set_title("종가 (원)", color=WHITE, fontsize=10, pad=4)
-    ax0.yaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: f"{int(v):,}"))
-    _ax_style(ax0, "원", GOLD)
-    ax0.legend(facecolor="#2C3E50", labelcolor=WHITE, fontsize=8, loc="upper left")
-
-    # ── Row1: 공매도비율 ─────────────────────────────────────
-    ax1 = axes[1]
-    ax1.bar(x, ratio_vals, color=RED, alpha=0.7, width=0.8, label="공매도비율")
-    # 5일 이동평균
-    ratio_arr = np.array(ratio_vals, dtype=float)
-    if n >= 5:
-        ma5 = np.convolve(ratio_arr, np.ones(5) / 5, mode="valid")
-        ax1.plot(np.arange(4, n), ma5, color=WHITE, linewidth=1.2,
-                 linestyle="--", label="5일 MA")
-    ax1.set_title("공매도비율 (%)", color=WHITE, fontsize=10, pad=4)
-    ax1.yaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: f"{v:.1f}%"))
-    _ax_style(ax1, "%", RED)
-    ax1.legend(facecolor="#2C3E50", labelcolor=WHITE, fontsize=8, loc="upper left")
-
-    # ── Row2: 대차잔고수량 ───────────────────────────────────
-    ax2 = axes[2]
-    loan_arr = np.array(loan_vals, dtype=float)
-    ax2.plot(x, loan_arr, color=PURP, linewidth=1.8, label="대차잔고")
-    ax2.fill_between(x, 0, loan_arr, alpha=0.2, color=PURP)
-    ax2.set_title("대차잔고 (주)", color=WHITE, fontsize=10, pad=4)
-    ax2.yaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: f"{int(v):,}"))
-    _ax_style(ax2, "주", PURP)
-    ax2.legend(facecolor="#2C3E50", labelcolor=WHITE, fontsize=8, loc="upper left")
-
-    # x축 공통
-    ax2.set_xticks(tick_pos)
-    ax2.set_xticklabels(tick_lbl, rotation=45, ha="right", fontsize=8, color=GRAY)
-
-    fig.subplots_adjust(top=0.95, hspace=0.12, bottom=0.10)
-    return _buf()
