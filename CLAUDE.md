@@ -83,9 +83,10 @@ python collector.py
 | `/cf 종목명` | `/cashflow` | 현금흐름표 차트 (연간+분기, DART) |
 | `/sum 종목명` | `/summary` | 가치투자 요약 텍스트 |
 | `/div 종목명` | `/dividend` | 배당 이력 차트 (최근 10년) |
-| `/fa 종목명` | `/financeall` | 재무 전체 — fin·r·val·cf·sum·div·pr 순서로 실행 |
+| `/fa 종목명` | `/financeall` | 재무 전체 — fin·r·val·cf·sum·div·pr·du·con 순서로 실행 |
 | `/pr 종목명` | `/pricerange` | 주가범위 차트 (EPS/DPS/주가Min·Max, 최근 10년) |
 | `/du 종목명` | `/dupont` | DuPont 분석 차트 (ROE=순이익률×총자산회전율×재무레버리지, 연간 최근 10년) |
+| `/con 종목명` | `/consensus` | FnGuide 컨센서스 차트 (과거 2년 실적+미래 3년 추정, 매출·영업이익·순이익) |
 
 종목명 텍스트 직접 입력 또는 6자리 코드 입력 → `/s`와 동일
 

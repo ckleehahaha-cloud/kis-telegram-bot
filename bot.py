@@ -619,9 +619,65 @@ async def _send_dupont(chat_id: int, code: str, name: str, ctx):
 
 
 
+async def _send_consensus(chat_id: int, code: str, name: str, ctx):
+    """FnGuide 컨센서스 (과거 2년 실적 + 미래 3년 추정)"""
+    from fnguide_api import get_consensus
+    msg = await ctx.bot.send_message(chat_id, f"⏳ *{name}* 컨센서스 조회 중… (FnGuide)", parse_mode="Markdown")
+    try:
+        data, price_info = await asyncio.gather(
+            asyncio.to_thread(get_consensus, code),
+            asyncio.to_thread(kis_api.get_current_price, code),
+        )
+        if not data:
+            await ctx.bot.edit_message_text(
+                f"❌ *{name}*: 컨센서스 데이터를 가져올 수 없습니다.\n(FnGuide 접속 실패 또는 종목 미지원)",
+                chat_id=chat_id, message_id=msg.message_id, parse_mode="Markdown")
+            return
+
+        mkt_cap = price_info.get("mkt_cap")  # 억원
+
+        await ctx.bot.send_photo(
+            chat_id,
+            photo=charts.chart_consensus(data, name, mkt_cap=mkt_cap),
+            caption=f"*{name}* | FnGuide 컨센서스 (과거 실적 + 미래 추정)",
+            parse_mode="Markdown",
+        )
+
+        def _fmt(v):
+            return f"{int(v):,}" if v is not None else "N/A"
+
+        def _fmt_x(v):
+            return f"{v:.1f}x" if v is not None else "N/A"
+
+        def _per(profit):
+            if mkt_cap and profit and profit > 0:
+                return mkt_cap / profit
+            return None
+
+        lines = ["```"]
+        lines.append(f"{'연도':>7} {'매출액':>9} {'영업이익':>9} {'순이익':>9} {'POR':>7} {'PER':>7}")
+        for r in data:
+            tag  = "E" if r["is_estimate"] else "A"
+            yr   = f"{r['year']}{tag}"
+            por  = _per(r.get("op_profit"))
+            per  = _per(r.get("net_profit"))
+            lines.append(
+                f"{yr:>7} {_fmt(r['revenue']):>9} "
+                f"{_fmt(r['op_profit']):>9} {_fmt(r['net_profit']):>9} "
+                f"{_fmt_x(por):>7} {_fmt_x(per):>7}"
+            )
+        cap_line = f"시가총액 {mkt_cap:,.0f}억원 기준" if mkt_cap else "시가총액 미취득"
+        lines += [f"(단위: 억원 | {cap_line})", "```"]
+        await _send_text(ctx.bot, chat_id, "\n".join(lines))
+        await ctx.bot.delete_message(chat_id, msg.message_id)
+    except Exception as e:
+        logger.exception("컨센서스 오류")
+        await ctx.bot.edit_message_text(f"❌ 오류: {e}", chat_id=chat_id, message_id=msg.message_id)
+
+
 async def _send_finance_all(chat_id: int, code: str, name: str, ctx):
-    """재무 전체: 손익 → 재무비율 → 밸류에이션 → 현금흐름 → 요약 → 배당 → 주가범위 → 공매도 순서로 전송"""
-    for fn in (_send_finance, _send_ratio, _send_valuation, _send_cashflow, _send_summary, _send_dividend, _send_pricerange):
+    """재무 전체: 손익 → 재무비율 → 밸류에이션 → 현금흐름 → 요약 → 배당 → 주가범위 → DuPont → 컨센서스 순서로 전송"""
+    for fn in (_send_finance, _send_ratio, _send_valuation, _send_cashflow, _send_summary, _send_dividend, _send_pricerange, _send_dupont, _send_consensus):
         await fn(chat_id, code, name, ctx)
 
 
@@ -681,6 +737,7 @@ _SEND_FN = {
     "summary":    _send_summary,
     "dividend":   _send_dividend,
     "dupont":     _send_dupont,
+    "consensus":  _send_consensus,
 }
 
 
@@ -725,7 +782,8 @@ async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "`/div` · `/dividend` — 배당 이력 \\(최근 10년\\)\n"
         "`/pr` · `/pricerange` — 주가범위 \\(EPS/DPS/주가Min·Max, 10년\\)\n"
         "`/du` · `/dupont` — DuPont 분석 \\(ROE 3요소 분해, 10년\\)\n"
-        "`/fa` · `/financeall` — 재무 전체 \\(fin→r→val→cf→sum→div→pr\\)\n\n"
+        "`/con` · `/consensus` — FnGuide 컨센서스 \\(과거 2년 실적\\+미래 3년 추정\\)\n"
+        "`/fa` · `/financeall` — 재무 전체 \\(fin→r→val→cf→sum→div→pr→du→con\\)\n\n"
         "_종목명 또는 6자리 코드 직접 입력 → `/s` 동일_",
         parse_mode="MarkdownV2",
     )
@@ -752,6 +810,7 @@ async def _cmd_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE, mode: str
         "finall":     "/fa",
         "pricerange": "/pr",
         "dupont":     "/du",
+        "consensus":  "/con",
     }
     if not ctx.args:
         await update.message.reply_text(
@@ -825,6 +884,9 @@ async def cmd_pricerange(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_dupont(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await _cmd_handler(update, ctx, "dupont")
+
+async def cmd_consensus(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await _cmd_handler(update, ctx, "consensus")
 
 async def cmd_volatility(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not update.message or not _is_allowed(update.effective_user.id):
@@ -1024,6 +1086,8 @@ def main():
     app.add_handler(CommandHandler("pr",          cmd_pricerange))
     app.add_handler(CommandHandler("dupont",      cmd_dupont))
     app.add_handler(CommandHandler("du",          cmd_dupont))
+    app.add_handler(CommandHandler("consensus",   cmd_consensus))
+    app.add_handler(CommandHandler("con",         cmd_consensus))
     app.add_handler(CommandHandler("volatility",  cmd_volatility))
     app.add_handler(CommandHandler("vol",         cmd_volatility))
     app.add_handler(CommandHandler("collect",   cmd_collect))   # 수집기 제어

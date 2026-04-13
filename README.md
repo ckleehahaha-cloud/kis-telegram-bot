@@ -1,8 +1,8 @@
 # KIS Telegram Bot
 
-한국투자증권(KIS) Open API + DART OpenAPI를 이용한 주식 정보 텔레그램 봇.
+한국투자증권(KIS) Open API + DART OpenAPI + FnGuide를 이용한 주식 정보 텔레그램 봇.
 투자자 수급, 프로그램 매매, 손익계산서, 재무비율, 밸류에이션(PER/POR/PBR),
-현금흐름표, DuPont 분석, KOSPI 심리 변동 비율 등을 차트 이미지로 전송합니다.
+현금흐름표, DuPont 분석, FnGuide 컨센서스(PER/POR 포함), KOSPI 심리 변동 비율 등을 차트 이미지로 전송합니다.
 
 ---
 
@@ -121,7 +121,8 @@ python collector.py
 | `/div 삼성전자` | `/dividend` | 배당 이력 차트 (DPS/수익률/배당성향, 최근 10년) |
 | `/pr 삼성전자` | `/pricerange` | 주가범위 차트 (EPS/DPS/주가Min·Max/연말종가, 최근 10년) |
 | `/du 삼성전자` | `/dupont` | DuPont 분석 — ROE 3요소 분해 ([상세](#dupont)) |
-| `/fa 삼성전자` | `/financeall` | 재무 전체 — fin·r·val·cf·sum·div·pr 순서로 실행 |
+| `/con 삼성전자` | `/consensus` | FnGuide 컨센서스 — 매출액·영업이익·순이익 + POR/PER ([상세](#consensus)) |
+| `/fa 삼성전자` | `/financeall` | 재무 전체 — fin·r·val·cf·sum·div·pr·du·con 순서로 실행 |
 
 > 종목명 또는 6자리 종목코드를 직접 입력해도 `/s` 와 동일하게 동작합니다.
 
@@ -144,6 +145,21 @@ RobustSTL(2018 논문) 알고리즘으로 **추세 / 계절성 / 잔차**로 분
 차트 표시 범위는 **최근 3개월**입니다.
 
 > `scipy.optimize.linprog`(HiGHS) L1 최적화 포함으로 응답까지 **수십 초** 소요될 수 있습니다.
+
+### /consensus — FnGuide 컨센서스 <a name="consensus"></a>
+
+FnGuide 연간 컨센서스 데이터를 조회합니다. 연결 재무제표(D) 우선, 없으면 별도(B) fallback.
+
+```
+POR = 현재 시가총액 / 컨센서스 영업이익
+PER = 현재 시가총액 / 컨센서스 당기순이익
+```
+
+- 연도 표기: `2023A`(실적) / `2026E`(추정)
+- 차트 레이아웃: 매출액(전폭) / 영업이익+POR / 당기순이익+PER
+- 데이터 소스: `https://comp.fnguide.com` JSON API (크롤링 아님)
+
+> FnGuide 서버 점검 또는 종목 미지원 시 데이터를 가져올 수 없습니다.
 
 ### /dupont — DuPont 분석 <a name="dupont"></a>
 
@@ -208,6 +224,7 @@ kis_telegram_bot/
 | 수급, 프로그램 매매, 현재가, 주가 이력 | KIS OpenAPI |
 | 손익계산서, 재무비율, 밸류에이션 (EPS/BPS/PER/POR/PBR) | KIS OpenAPI |
 | 주당배당금 (DPS), 현금흐름표 | DART OpenAPI |
+| 컨센서스 (매출액·영업이익·순이익·POR/PER) | FnGuide JSON API |
 | KOSPI 심리 변동 비율 (RobustSTL) | yfinance (`^KS11`) |
 
 ---

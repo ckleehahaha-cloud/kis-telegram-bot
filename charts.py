@@ -1413,3 +1413,202 @@ def chart_dupont(data: list, name: str) -> io.BytesIO:
     )
     return _buf()
 
+
+# ══════════════════════════════════════════════════════════════
+#  FnGuide 컨센서스 (과거 2년 실적 + 미래 3년 추정)
+# ══════════════════════════════════════════════════════════════
+def chart_consensus(data: list, name: str, mkt_cap: float | None = None) -> io.BytesIO:
+    """
+    2×2 subplot (figsize=11×8):
+      [0,0] 매출액     [0,1] 매출총이익
+      [1,0] 영업이익   [1,1] 당기순이익
+
+    실적(is_estimate=False): #3498DB
+    추정(is_estimate=True):  #E74C3C, alpha=0.6, hatch='//'
+    추정연도 앞에 white dashed 수직 구분선.
+    """
+    if not data:
+        return _empty_chart("컨센서스 데이터 없음", f"[컨센서스] {name}")
+
+    BG    = "#1A1A2E"
+    AX_BG = "#16213E"
+    BLUE  = "#3498DB"
+    RED   = "#E74C3C"
+
+    years     = [f"{d['year']}{'E' if d['is_estimate'] else 'A'}" for d in data]
+    x         = np.arange(len(years))
+    first_est = next((i for i, d in enumerate(data) if d["is_estimate"]), None)
+
+    # PER / POR 계산 (현재 시가총액 기준)
+    def _ratio(profit_vals):
+        if mkt_cap is None:
+            return [None] * len(data)
+        result = []
+        for v in profit_vals:
+            if v and v > 0:
+                result.append(mkt_cap / v)
+            else:
+                result.append(None)
+        return result
+
+    per_vals = _ratio([d.get("net_profit") for d in data])
+    por_vals = _ratio([d.get("op_profit")  for d in data])
+
+    def _fmt_bil(v):
+        return f"{v:,.0f}억" if v is not None else ""
+
+    def _fmt_x(v):
+        return f"{v:.1f}x" if v is not None else ""
+
+    def _draw_profit(ax, field, title, ratio_vals, ratio_label):
+        ax.set_facecolor(AX_BG)
+        for spine in ax.spines.values():
+            spine.set_edgecolor("#2C3E50")
+
+        vals     = [d.get(field) for d in data]
+        bar_vals = [v if v is not None else 0.0 for v in vals]
+        max_val  = max(abs(v) for v in bar_vals) if any(bar_vals) else 1.0
+
+        for i, (v, d) in enumerate(zip(bar_vals, data)):
+            color = RED if d["is_estimate"] else BLUE
+            kw    = dict(color=color, width=0.6)
+            if d["is_estimate"]:
+                ax.bar(i, v, alpha=0.6, hatch="//", edgecolor=RED, **kw)
+            else:
+                ax.bar(i, v, alpha=0.85, **kw)
+
+        offset = max_val * 0.025 if max_val > 0 else 0.05
+        for i, v in enumerate(vals):
+            if v is not None and v != 0.0:
+                ax.text(i, (v if v > 0 else 0) + offset, _fmt_bil(v),
+                        ha="center", va="bottom", fontsize=7, color="white")
+
+        if first_est is not None and first_est > 0:
+            ax.axvline(first_est - 0.5, color="white",
+                       linestyle="--", linewidth=0.8, alpha=0.55)
+
+        ax.set_title(title, color="white", fontsize=10)
+        ax.set_xticks(x)
+        ax.set_xticklabels(years, fontsize=8, color="gray")
+        ax.tick_params(colors="gray", labelsize=8)
+        ax.set_ylabel("억원", color="gray", fontsize=8)
+        ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: f"{v:,.0f}"))
+        ax.axhline(0, color="white", linewidth=0.4, alpha=0.3)
+
+        # ratio 보조 y축 (선 + 마커)
+        valid = [(i, v) for i, v in enumerate(ratio_vals) if v is not None]
+        if valid and mkt_cap is not None:
+            rx, ry = zip(*valid)
+            ax2 = ax.twinx()
+            ax2.plot(list(rx), list(ry), color="#F1C40F", linewidth=1.8,
+                     marker="D", markersize=4, alpha=0.9, label=ratio_label)
+            for xi, yi in zip(rx, ry):
+                ax2.text(xi, yi, _fmt_x(yi),
+                         ha="center", va="bottom", fontsize=6.5, color="#F1C40F")
+            ax2.set_ylabel(ratio_label, color="#F1C40F", fontsize=8)
+            ax2.tick_params(axis="y", labelcolor="#F1C40F", labelsize=7)
+            ax2.yaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: f"{v:.1f}x"))
+            ax2.spines["right"].set_edgecolor("#F1C40F")
+
+    def _draw_ratio_only(ax, ratio_vals, title, ylabel):
+        """매출액 패널 — 비율 없이 막대만."""
+        ax.set_facecolor(AX_BG)
+        for spine in ax.spines.values():
+            spine.set_edgecolor("#2C3E50")
+
+        vals     = [d.get("revenue") for d in data]
+        bar_vals = [v if v is not None else 0.0 for v in vals]
+        max_val  = max(abs(v) for v in bar_vals) if any(bar_vals) else 1.0
+
+        for i, (v, d) in enumerate(zip(bar_vals, data)):
+            color = RED if d["is_estimate"] else BLUE
+            if d["is_estimate"]:
+                ax.bar(i, v, color=color, alpha=0.6, hatch="//",
+                       edgecolor=RED, width=0.6)
+            else:
+                ax.bar(i, v, color=color, alpha=0.85, width=0.6)
+
+        offset = max_val * 0.025 if max_val > 0 else 0.05
+        for i, v in enumerate(vals):
+            if v is not None and v != 0.0:
+                ax.text(i, (v if v > 0 else 0) + offset, _fmt_bil(v),
+                        ha="center", va="bottom", fontsize=7, color="white")
+
+        if first_est is not None and first_est > 0:
+            ax.axvline(first_est - 0.5, color="white",
+                       linestyle="--", linewidth=0.8, alpha=0.55)
+
+        ax.set_title(title, color="white", fontsize=10)
+        ax.set_xticks(x)
+        ax.set_xticklabels(years, fontsize=8, color="gray")
+        ax.tick_params(colors="gray", labelsize=8)
+        ax.set_ylabel(ylabel, color="gray", fontsize=8)
+        ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: f"{v:,.0f}"))
+        ax.axhline(0, color="white", linewidth=0.4, alpha=0.3)
+
+    # ── GridSpec 3×2: Row0=매출액(full), Row1=영업이익|POR, Row2=순이익|PER
+    fig = plt.figure(figsize=(13, 12))
+    fig.patch.set_facecolor(BG)
+    cap_txt = f"  (시가총액 {mkt_cap:,.0f}억)" if mkt_cap else ""
+    fig.suptitle(f"{name} 컨센서스{cap_txt}", fontsize=14, color="white", y=0.99)
+
+    gs = GridSpec(3, 2, figure=fig, hspace=0.5, wspace=0.4)
+
+    ax_rev = fig.add_subplot(gs[0, :])
+    _draw_ratio_only(ax_rev, None, "매출액", "억원")
+
+    ax_op  = fig.add_subplot(gs[1, 0])
+    _draw_profit(ax_op,  "op_profit",  "영업이익", por_vals, "POR")
+
+    ax_net = fig.add_subplot(gs[2, 0])
+    _draw_profit(ax_net, "net_profit", "당기순이익", per_vals, "PER")
+
+    # POR / PER 단독 패널 (막대: 비율값)
+    for ax_r, ratio_vals, title in (
+        (fig.add_subplot(gs[1, 1]), por_vals, "POR (배)"),
+        (fig.add_subplot(gs[2, 1]), per_vals, "PER (배)"),
+    ):
+        ax_r.set_facecolor(AX_BG)
+        for spine in ax_r.spines.values():
+            spine.set_edgecolor("#2C3E50")
+        bar_vals = [v if v is not None else 0.0 for v in ratio_vals]
+        max_val  = max(bar_vals) if any(bar_vals) else 1.0
+        for i, (v, d) in enumerate(zip(bar_vals, data)):
+            color = RED if d["is_estimate"] else "#F1C40F"
+            ax_r.bar(i, v, color=color,
+                     alpha=0.6 if d["is_estimate"] else 0.85,
+                     hatch="//" if d["is_estimate"] else "",
+                     edgecolor=color, width=0.6)
+        offset = max_val * 0.025 if max_val > 0 else 0.05
+        for i, v in enumerate(ratio_vals):
+            if v:
+                ax_r.text(i, v + offset, _fmt_x(v),
+                          ha="center", va="bottom", fontsize=7, color="white")
+        if first_est is not None and first_est > 0:
+            ax_r.axvline(first_est - 0.5, color="white",
+                         linestyle="--", linewidth=0.8, alpha=0.55)
+        if mkt_cap is None:
+            ax_r.text(0.5, 0.5, "시가총액 없음", ha="center", va="center",
+                      color="gray", transform=ax_r.transAxes)
+        ax_r.set_title(title, color="white", fontsize=10)
+        ax_r.set_xticks(x)
+        ax_r.set_xticklabels(years, fontsize=8, color="gray")
+        ax_r.tick_params(colors="gray", labelsize=8)
+        ax_r.set_ylabel("배", color="gray", fontsize=8)
+        ax_r.yaxis.set_major_formatter(
+            mticker.FuncFormatter(lambda v, _: f"{v:.1f}x"))
+        ax_r.axhline(0, color="white", linewidth=0.4, alpha=0.3)
+
+    # 공통 범례
+    legend_elements = [
+        Patch(facecolor=BLUE,      alpha=0.85, label="실적 (A)"),
+        Patch(facecolor=RED,       alpha=0.6,  hatch="//", label="추정 (E)"),
+        Patch(facecolor="#F1C40F", alpha=0.85, label="PER/POR"),
+    ]
+    fig.legend(handles=legend_elements, loc="upper right", fontsize=9,
+               facecolor="#2C3E50", labelcolor="white", framealpha=0.7,
+               bbox_to_anchor=(0.99, 0.97))
+
+    fig.subplots_adjust(top=0.93)
+    return _buf()
+
