@@ -1,12 +1,16 @@
 # 설정 및 인증 (절대 커밋 금지)
 config.py
 .kis_token.json
+token_cache.json
 
 # 런타임 생성 파일
 .stock_list.json
 .dart_corp_codes.json
 .font_cache.json
 data/
+
+# 로그
+*.log
 
 # Claude Code 프로젝트 메타데이터
 .claude/
@@ -26,6 +30,7 @@ build/
 .venv/
 venv/
 env/
+myenv/
 
 # IDE
 .idea/
