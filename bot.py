@@ -104,7 +104,7 @@ async def _send_all(chat_id: int, code: str, name: str, ctx):
         await ctx.bot.send_photo(chat_id,
             photo=charts.chart_intraday_investor(program_data, name),
             caption=f"*{name}* | 당일 프로그램 매매 시간별", parse_mode="Markdown")
-        await _send_text(ctx.bot, chat_id, _fmt_daily_investor(daily_data, name))
+        await _send_code(ctx.bot, chat_id, _fmt_daily_investor(daily_data, name))
         await ctx.bot.delete_message(chat_id, msg.message_id)
     except Exception as e:
         logger.exception("전체 차트 오류")
@@ -167,7 +167,7 @@ async def _send_estimate(chat_id: int, code: str, name: str, ctx):
         else:
             text = f"{name} | 잠정 수급 데이터 없음\n(장중에만 제공됩니다)"
 
-        await ctx.bot.send_message(chat_id, text)
+        await _send_code(ctx.bot, chat_id, text)
         await ctx.bot.send_photo(chat_id,
             photo=charts.chart_investor_estimate(est_data, name),
             caption=f"*{name}* | 외국인/기관 잠정 수급 차트", parse_mode="Markdown")
@@ -185,7 +185,7 @@ async def _send_volume(chat_id: int, code: str, name: str, ctx):
         await ctx.bot.send_photo(chat_id,
             photo=charts.chart_price_volume_ratio(data),
             caption=f"*{name}* | 가격대별 거래량 분포 (VWAP 포함)", parse_mode="Markdown")
-        await _send_text(ctx.bot, chat_id, _fmt_price_volume(data, name))
+        await _send_code(ctx.bot, chat_id, _fmt_price_volume(data, name))
         await ctx.bot.delete_message(chat_id, msg.message_id)
     except Exception as e:
         logger.exception("거래량분포 오류")
@@ -212,12 +212,38 @@ async def _send_text(bot, chat_id: int, text: str):
         await bot.send_message(chat_id, chunk.rstrip())
 
 
+async def _send_code(bot, chat_id: int, text: str):
+    """텍스트를 모노스페이스 코드 블록으로 전송. 4096자 초과 시 분할."""
+    MAX = 4080  # ``` 래핑 오버헤드(8자) 및 여유 고려
+    lines = text.split("\n")
+    chunk_lines: list = []
+    chunk_len = 0
+    for line in lines:
+        line_len = len(line) + 1
+        if chunk_len + line_len > MAX and chunk_lines:
+            await bot.send_message(
+                chat_id,
+                "```\n" + "\n".join(chunk_lines) + "\n```",
+                parse_mode="Markdown",
+            )
+            chunk_lines = []
+            chunk_len = 0
+        chunk_lines.append(line)
+        chunk_len += line_len
+    if chunk_lines:
+        await bot.send_message(
+            chat_id,
+            "```\n" + "\n".join(chunk_lines) + "\n```",
+            parse_mode="Markdown",
+        )
+
+
 def _fmt_daily_investor(data: list, name: str) -> str:
     """3개월 수급 raw data 텍스트 (최근 20 거래일, 최신순)"""
     rows = list(reversed(data[-20:])) if data else []
     if not rows:
-        return f"*{name}* | 수급 데이터 없음\n"
-    lines = [f"*{name}* | 투자자별 순매수 Raw Data (최근 {len(rows)}일, 단위: 주)"]
+        return f"{name} | 수급 데이터 없음\n"
+    lines = [f"{name} | 투자자별 순매수 Raw Data (최근 {len(rows)}일, 단위: 주)"]
     lines.append("날짜        개인          외국인        기관")
     lines.append("-" * 46)
     for d in rows:
@@ -327,7 +353,7 @@ async def _send_finance(chat_id: int, code: str, name: str, ctx):
             + "\n\n"
             + _format_income_text(quarterly, "분기")
         )
-        await _send_text(ctx.bot, chat_id, text)
+        await _send_code(ctx.bot, chat_id, text)
         await ctx.bot.delete_message(chat_id, msg.message_id)
     except Exception as e:
         logger.exception("손익계산서 오류")
@@ -369,7 +395,7 @@ async def _send_cashflow(chat_id: int, code: str, name: str, ctx):
             + "\n\n"
             + _fmt_cash_flow(quarterly, "분기")
         )
-        await _send_text(ctx.bot, chat_id, text)
+        await _send_code(ctx.bot, chat_id, text)
         await ctx.bot.delete_message(chat_id, msg.message_id)
     except Exception as e:
         logger.exception("현금흐름 오류")
@@ -435,7 +461,7 @@ async def _send_valuation(chat_id: int, code: str, name: str, ctx):
             f"{name} | 밸류에이션 Raw Data\n\n"
             + _fmt_valuation(annual, "연간")
         )
-        await _send_text(ctx.bot, chat_id, text)
+        await _send_code(ctx.bot, chat_id, text)
         await ctx.bot.delete_message(chat_id, msg.message_id)
     except Exception as e:
         logger.exception("밸류에이션 오류")
@@ -461,7 +487,7 @@ async def _send_ratio(chat_id: int, code: str, name: str, ctx):
             + "\n\n"
             + _fmt_financial_ratio(quarterly_ratio, "분기")
         )
-        await _send_text(ctx.bot, chat_id, text)
+        await _send_code(ctx.bot, chat_id, text)
         await ctx.bot.delete_message(chat_id, msg.message_id)
     except Exception as e:
         logger.exception("재무비율 오류")
@@ -506,7 +532,7 @@ async def _send_summary(chat_id: int, code: str, name: str, ctx):
             f"영업이익률 {_f(d.get('op_margin'), '{:.1f}%'):>18}\n"
             f"52주위치   {_f(d.get('w52_pos'), '{:.1f}%'):>18}\n"
         )
-        await _send_text(ctx.bot, chat_id, text)
+        await _send_code(ctx.bot, chat_id, text)
         await ctx.bot.delete_message(chat_id, msg.message_id)
     except Exception as e:
         logger.exception("요약 오류")
@@ -541,7 +567,7 @@ async def _send_dividend(chat_id: int, code: str, name: str, ctx):
         await ctx.bot.send_photo(chat_id,
             photo=charts.chart_dividend(data, name, current_price),
             caption=f"*{name}* | 배당 이력 (최근 10년)", parse_mode="Markdown")
-        await _send_text(ctx.bot, chat_id, _fmt_dividend(data, name))
+        await _send_code(ctx.bot, chat_id, _fmt_dividend(data, name))
         await ctx.bot.delete_message(chat_id, msg.message_id)
     except Exception as e:
         logger.exception("배당 이력 오류")
@@ -575,7 +601,7 @@ async def _send_pricerange(chat_id: int, code: str, name: str, ctx):
         await ctx.bot.send_photo(chat_id,
             photo=charts.chart_price_range(kis_data, name),
             caption=f"*{name}* | 주가범위 (EPS/DPS/주가Min·Max, 최근 10년)", parse_mode="Markdown")
-        await _send_text(ctx.bot, chat_id, _fmt_pricerange(kis_data, name))
+        await _send_code(ctx.bot, chat_id, _fmt_pricerange(kis_data, name))
         await ctx.bot.delete_message(chat_id, msg.message_id)
     except Exception as e:
         logger.exception("주가범위 오류")
@@ -612,7 +638,7 @@ async def _send_dupont(chat_id: int, code: str, name: str, ctx):
             at   = f"{d['asset_turnover']:>8.2f}회"  if d.get("asset_turnover") is not None else f"{'N/A':>9}"
             lv   = f"{d['leverage']:>7.2f}배"        if d.get("leverage") is not None else f"{'N/A':>8}"
             lines.append(f"{d['period']}  {roe}  {nm}  {at}  {lv}")
-        await _send_text(ctx.bot, chat_id, "\n".join(lines))
+        await _send_code(ctx.bot, chat_id, "\n".join(lines))
         await ctx.bot.delete_message(chat_id, msg.message_id)
     except Exception as e:
         logger.exception("DuPont 오류")
@@ -670,7 +696,7 @@ async def _send_consensus(chat_id: int, code: str, name: str, ctx):
             )
         cap_line = f"시가총액 {mkt_cap:,.0f}억원 기준" if mkt_cap else "시가총액 미취득"
         lines.append(f"(단위: 억원 | {cap_line})")
-        await _send_text(ctx.bot, chat_id, "\n".join(lines))
+        await _send_code(ctx.bot, chat_id, "\n".join(lines))
         await ctx.bot.delete_message(chat_id, msg.message_id)
     except Exception as e:
         logger.exception("컨센서스 오류")
@@ -722,7 +748,7 @@ async def _send_global(chat_id: int, ctx):
         df, usd_krw = await asyncio.to_thread(global_api.get_global_data)
 
         NAME_W = 20
-        header = f"{'#':>2} {'Name':<{NAME_W}} {'MCap(T)':>7}  {'F.NI(T)':>7}  {'FPER':>5}"
+        header = f"{'#':>2} {'Name':<{NAME_W}} {'MCap(T KRW)':>11}  {'F.NI(T KRW)':>11}  {'FPER':>5}"
         sep    = "-" * len(header)
         table_lines = [header, sep]
         for rank, row in df.iterrows():
@@ -731,8 +757,8 @@ async def _send_global(chat_id: int, ctx):
             fni    = row["Forward 순이익 (조 원)"]
             fper   = row["Forward PER"]
 
-            mcap_s = f"{int(round(mcap)):>7,}"  if isinstance(mcap, (int, float)) else f"{'N/A':>7}"
-            fni_s  = f"{int(round(fni)):>7,}"   if isinstance(fni,  (int, float)) else f"{'N/A':>7}"
+            mcap_s = f"{int(round(mcap)):>11,}"  if isinstance(mcap, (int, float)) else f"{'N/A':>11}"
+            fni_s  = f"{int(round(fni)):>11,}"   if isinstance(fni,  (int, float)) else f"{'N/A':>11}"
             fper_s = f"{fper:>5.1f}"             if isinstance(fper, (int, float)) else f"{'N/A':>5}"
             table_lines.append(f"{rank:>2} {name_s} {mcap_s}  {fni_s}  {fper_s}")
 
@@ -939,7 +965,7 @@ async def cmd_market(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await ctx.bot.send_photo(chat_id,
             photo=charts.chart_market_funds(data),
             caption="시장 자금 동향 | 고객예탁금 / 신용융자 / 미수금 / 선물예수금 (3개월)")
-        await _send_text(ctx.bot, chat_id, _fmt_market_funds(data))
+        await _send_code(ctx.bot, chat_id, _fmt_market_funds(data))
         await ctx.bot.delete_message(chat_id, msg.message_id)
     except Exception as e:
         logger.exception("시장자금 오류")
