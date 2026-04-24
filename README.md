@@ -2,7 +2,8 @@
 
 한국투자증권(KIS) Open API + DART OpenAPI + FnGuide를 이용한 주식 정보 텔레그램 봇.
 투자자 수급, 프로그램 매매, 손익계산서, 재무비율, 밸류에이션(PER/POR/PBR),
-현금흐름표, DuPont 분석, FnGuide 컨센서스(PER/POR 포함), KOSPI 심리 변동 비율 등을 차트 이미지로 전송합니다.
+현금흐름표, DuPont 분석, FnGuide 컨센서스, KOSPI 심리 변동 비율,
+글로벌 시가총액 Top 30 등을 차트 이미지 또는 텍스트로 전송합니다.
 
 ---
 
@@ -94,8 +95,8 @@ python collector.py
 
 ### 📈 시장 — 종목명 필요
 
-| 명령어 | 별칭 | 설명 |
-|--------|------|------|
+| 단축 | 전체 | 설명 |
+|------|------|------|
 | `/s 삼성전자` | `/supply` | 3개월 수급 + 당일 시간대별 + 프로그램 매매 차트 |
 | `/p 삼성전자` | `/program` | 당일 프로그램 매매 차트 |
 | `/i 삼성전자` | `/intraday` | 당일 시간대별 투자자 수급 차트 |
@@ -104,15 +105,17 @@ python collector.py
 
 ### 📈 시장 — 종목명 불필요
 
-| 명령어 | 별칭 | 설명 |
-|--------|------|------|
+| 단축 | 전체 | 설명 |
+|------|------|------|
 | `/m` | `/market` | 시장 자금 동향 (예탁금/신용융자/미수금/선물예수금) |
-| `/volatility` | `/vol` | KOSPI 심리 변동 비율 — 최근 3개월 ([상세](#volatility)) |
+| `/vol` | `/volatility` | KOSPI 심리 변동 비율 — 최근 3개월 ([상세](#volatility)) |
+| `/global` | — | 글로벌 시가총액 Top 30 텍스트 (30~60초 소요) |
+| `/cs` | `/cstocks` | 수집 종목 관리 — 목록 / 추가(`add`) / 삭제(`del`) |
 
 ### 📊 재무 — 종목명 필요
 
-| 명령어 | 별칭 | 설명 |
-|--------|------|------|
+| 단축 | 전체 | 설명 |
+|------|------|------|
 | `/fin 삼성전자` | `/finance` | 손익계산서 차트 (연간+분기) |
 | `/r 삼성전자` | `/ratio` | 재무비율 차트 (ROE, 부채비율, 증가율) |
 | `/val 삼성전자` | `/valuation` | 밸류에이션 차트 (EPS/BPS/PER/POR/PBR, 연간) |
@@ -122,7 +125,7 @@ python collector.py
 | `/pr 삼성전자` | `/pricerange` | 주가범위 차트 (EPS/DPS/주가Min·Max/연말종가, 최근 10년) |
 | `/du 삼성전자` | `/dupont` | DuPont 분석 — ROE 3요소 분해 ([상세](#dupont)) |
 | `/con 삼성전자` | `/consensus` | FnGuide 컨센서스 — 매출액·영업이익·순이익 + POR/PER ([상세](#consensus)) |
-| `/fa 삼성전자` | `/financeall` | 재무 전체 — fin·r·val·cf·sum·div·pr·du·con 순서로 실행 |
+| `/fa 삼성전자` | `/financeall` | 재무전체 — fin·r·val·cf·sum·div·pr·du·con 순서로 실행 |
 
 > 종목명 또는 6자리 종목코드를 직접 입력해도 `/s` 와 동일하게 동작합니다.
 
@@ -130,7 +133,7 @@ python collector.py
 
 ## 명령어 상세
 
-### /volatility — KOSPI 심리 변동 비율 <a name="volatility"></a>
+### /vol — KOSPI 심리 변동 비율 <a name="volatility"></a>
 
 KOSPI 지수(`^KS11`)의 최근 3년 일봉을 yfinance 로 내려받아
 RobustSTL(2018 논문) 알고리즘으로 **추세 / 계절성 / 잔차**로 분해합니다.
@@ -145,6 +148,38 @@ RobustSTL(2018 논문) 알고리즘으로 **추세 / 계절성 / 잔차**로 분
 차트 표시 범위는 **최근 3개월**입니다.
 
 > `scipy.optimize.linprog`(HiGHS) L1 최적화 포함으로 응답까지 **수십 초** 소요될 수 있습니다.
+
+### /global — 글로벌 시가총액 Top 30
+
+companiesmarketcap.com 스크래핑으로 실시간 글로벌 시가총액 순위를 조회합니다.
+
+출력 열:
+
+| 열 | 설명 |
+|----|------|
+| 시총(조) | 시가총액 (조 원) |
+| F순이익 | Forward 순이익 — 컨센서스 추정치 (조 원) |
+| FPER | Forward PER — 시총 / Forward 순이익 |
+
+- 해외 종목: yfinance 시총 + Forward EPS 기반 순이익 추정
+- 한국 종목(삼성전자, SK하이닉스): 네이버 금융 실시간 시총
+- 환율: yfinance 실시간 조회 (USD/KRW, EUR, HKD, CHF, JPY, SAR). 실패 시 내장 기본값 사용
+- 티커 캐시: 60분간 프로세스 캐시 (재조회 불필요)
+- 스크래핑 실패 시 하드코딩 30개 티커로 자동 전환
+
+> 데이터 수집에 **30~60초** 소요됩니다.
+
+### /cs — 수집 종목 관리
+
+장중 프로그램 매매 데이터를 주기적으로 수집할 종목을 런타임에 관리합니다.
+
+| 명령어 | 설명 |
+|--------|------|
+| `/cs` | 현재 수집 종목 목록 확인 |
+| `/cs add 005930` | 종목 추가 (6자리 코드) |
+| `/cs del 005930` | 종목 삭제 |
+
+> 봇 재시작 시 `config.py` 의 초기값으로 리셋됩니다 (영구 저장 아님).
 
 ### /consensus — FnGuide 컨센서스 <a name="consensus"></a>
 
@@ -161,7 +196,7 @@ PER = 현재 시가총액 / 컨센서스 당기순이익
 
 > FnGuide 서버 점검 또는 종목 미지원 시 데이터를 가져올 수 없습니다.
 
-### /dupont — DuPont 분석 <a name="dupont"></a>
+### /du — DuPont 분석 <a name="dupont"></a>
 
 ROE(자기자본이익률)를 3가지 요소로 분해하여 ROE 변동의 원인을 파악합니다.
 
@@ -185,20 +220,6 @@ ROE = ① 순이익률 × ② 총자산회전율 × ③ 재무레버리지
 
 ---
 
-## 수집기 관리 (`/collect`)
-
-| 명령어 | 설명 |
-|--------|------|
-| `/collect on` | 수집 시작 |
-| `/collect off` | 수집 중지 |
-| `/collect status` | 현재 상태 확인 |
-| `/collect add 005930` | 수집 종목 추가 |
-| `/collect remove 005930` | 수집 종목 제거 |
-
-수집기가 동작 중일 때 `/p` 명령은 저장된 파일을 우선 사용하고, 파일이 없으면 API를 직접 호출합니다.
-
----
-
 ## 프로젝트 구조
 
 ```
@@ -206,9 +227,11 @@ kis_telegram_bot/
 ├── bot.py              # 텔레그램 봇 메인 (명령어 핸들러)
 ├── kis_api.py          # KIS OpenAPI 호출 함수
 ├── dart_api.py         # DART OpenAPI 호출 함수 (DPS, 현금흐름표)
+├── global_api.py       # 글로벌 시가총액 조회 (companiesmarketcap + yfinance + 네이버금융)
 ├── charts.py           # matplotlib 차트 생성 (BytesIO PNG 반환)
-├── RobustSTL.py        # RobustSTL 시계열 분해 클래스 (/volatility)
+├── RobustSTL.py        # RobustSTL 시계열 분해 클래스 (/vol)
 ├── collector.py        # 장중 프로그램 매매 데이터 수집기
+├── globaltop30.py      # 글로벌 시총 참고용 스크립트 (봇 미사용)
 ├── config.py           # API 키 설정 (★ gitignore 처리, 직접 작성 필요)
 ├── config.example.py   # 설정 파일 템플릿
 ├── requirements.txt    # Python 의존성
@@ -226,6 +249,10 @@ kis_telegram_bot/
 | 주당배당금 (DPS), 현금흐름표 | DART OpenAPI |
 | 컨센서스 (매출액·영업이익·순이익·POR/PER) | FnGuide JSON API |
 | KOSPI 심리 변동 비율 (RobustSTL) | yfinance (`^KS11`) |
+| 글로벌 시가총액 순위 | companiesmarketcap.com 스크래핑 |
+| 글로벌 시총·Forward EPS (해외 종목) | yfinance |
+| 글로벌 시총 (한국 종목) | 네이버 금융 |
+| 환율 (USD/KRW 등) | yfinance |
 
 ---
 
@@ -235,6 +262,9 @@ kis_telegram_bot/
 - `/e` (잠정 추정 수급)는 장중(09:00 ~ 15:00)에만 데이터가 제공됩니다.
 - `/cf`, `/pr`, `/div` 명령어는 DART API Key가 없으면 동작하지 않습니다.
 - `/cf` 는 연간 5회 + 분기 최대 20회 DART 병렬 호출로 조회합니다.
-- `/volatility` 는 cvxpy L1 최적화 포함으로 수십 초 소요될 수 있습니다.
+- `/vol` 은 scipy L1 최적화 포함으로 수십 초 소요될 수 있습니다.
+- `/global` 은 데이터 수집에 30~60초 소요됩니다. F순이익/FPER 는 Forward(추정치)이며 실적값이 아닙니다.
+- `/cs` 로 변경한 수집 종목은 봇 재시작 시 초기화됩니다.
 - 모의투자(`KIS_IS_REAL=False`) 환경에서는 일부 TR이 지원되지 않을 수 있습니다.
 - `config.py` 는 절대 커밋하지 마세요 (API 키 포함).
+- 모든 텍스트 출력은 일반 텍스트(parse_mode 없음)로 전송됩니다. 차트 캡션과 상태 메시지만 Markdown 서식을 사용합니다.
