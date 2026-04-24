@@ -162,13 +162,26 @@ def _load_stock_list() -> list[dict]:
     return results
 
 
+def get_stock_name(code: str) -> str:
+    """종목코드로 종목명 반환. 없으면 코드 반환."""
+    try:
+        stock_list = _load_stock_list()
+        for s in stock_list:
+            if s["code"] == code:
+                return s["name"]
+    except Exception:
+        pass
+    return code
+
+
 def search_stock_code(name: str) -> list[dict]:
     """
     종목명(부분 포함) 또는 6자리 코드로 검색
     반환: [{"code": "005930", "name": "삼성전자", "market": "KOSPI"}, ...]
     """
     if name.isdigit() and len(name) == 6:
-        return [{"code": name, "name": name, "market": "직접입력"}]
+        stock_name = get_stock_name(name)
+        return [{"code": name, "name": stock_name, "market": "직접입력"}]
 
     try:
         stock_list = _load_stock_list()

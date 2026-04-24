@@ -679,13 +679,26 @@ async def _send_consensus(chat_id: int, code: str, name: str, ctx):
 
 def _get_stock_name(code: str) -> str:
     """종목코드로 종목명 조회. 실패 시 코드 반환."""
-    try:
-        for r in kis_api.search_stock_code(code):
-            if r["code"] == code:
-                return r["name"]
-    except Exception:
-        pass
-    return code
+    return kis_api.get_stock_name(code)
+
+
+def _resolve_code(query: str) -> tuple:
+    """종목명 또는 6자리 코드를 (code, name)으로 변환.
+
+    Returns:
+        (code, name)  — 정상
+        (None, error_msg)  — 검색 실패 또는 복수 결과
+    """
+    query = query.strip()
+    if query.isdigit() and len(query) == 6:
+        return query, kis_api.get_stock_name(query)
+    results = kis_api.search_stock_code(query)
+    if not results:
+        return None, f"'{query}' 종목을 찾을 수 없습니다."
+    if len(results) > 1:
+        candidates = ", ".join(f"{r['name']}({r['code']})" for r in results[:5])
+        return None, f"'{query}' 검색 결과 {len(results)}개: {candidates} — 코드를 직접 입력하세요."
+    return results[0]["code"], results[0]["name"]
 
 
 def _ljust_disp(s: str, width: int) -> str:
@@ -708,27 +721,28 @@ async def _send_global(chat_id: int, ctx):
     try:
         df, usd_krw = await asyncio.to_thread(global_api.get_global_data)
 
-        NAME_W = 16  # 기업명 표시 너비 (한글 8자 or 영문 16자)
-        lines = ["🌍 글로벌 시가총액 Top 30\n"]
-        h_name = _ljust_disp("기업명", NAME_W)
-        lines.append(f"   {h_name} {'시총(조)':>7}  {'F순이익':>6}  {'FPER':>5}")
-        lines.append("-" * (3 + NAME_W + 1 + 7 + 2 + 6 + 2 + 5))
+        NAME_W = 20
+        header = f"{'#':>2} {'Name':<{NAME_W}} {'MCap(T)':>7}  {'F.NI(T)':>7}  {'FPER':>5}"
+        sep    = "-" * len(header)
+        table_lines = [header, sep]
         for rank, row in df.iterrows():
-            name_s = _ljust_disp(str(row["기업명"]), NAME_W)
+            name_s = str(row["기업명"])[:NAME_W].ljust(NAME_W)
             mcap   = row["시가총액 (조 원)"]
             fni    = row["Forward 순이익 (조 원)"]
             fper   = row["Forward PER"]
 
             mcap_s = f"{int(round(mcap)):>7,}"  if isinstance(mcap, (int, float)) else f"{'N/A':>7}"
-            fni_s  = f"{int(round(fni)):>6,}"   if isinstance(fni,  (int, float)) else f"{'N/A':>6}"
+            fni_s  = f"{int(round(fni)):>7,}"   if isinstance(fni,  (int, float)) else f"{'N/A':>7}"
             fper_s = f"{fper:>5.1f}"             if isinstance(fper, (int, float)) else f"{'N/A':>5}"
-            lines.append(f"{rank:>2} {name_s} {mcap_s}  {fni_s}  {fper_s}")
-        lines.append(
-            f"\nF순이익/FPER = Forward (컨센서스 추정치)"
-            f"\n환율: 1USD={int(round(usd_krw)):,}원 | 출처: companiesmarketcap, Yahoo Finance"
-        )
+            table_lines.append(f"{rank:>2} {name_s} {mcap_s}  {fni_s}  {fper_s}")
 
-        await _send_text(ctx.bot, chat_id, "\n".join(lines))
+        table = "\n".join(table_lines)
+        footer = (
+            f"F.NI/FPER = Forward (컨센서스 추정치)\n"
+            f"환율: 1USD={int(round(usd_krw)):,}원 | 출처: companiesmarketcap, Yahoo Finance"
+        )
+        text = f"🌍 글로벌 시가총액 Top 30\n\n```\n{table}\n```\n{footer}"
+        await ctx.bot.send_message(chat_id, text, parse_mode="Markdown")
         await ctx.bot.delete_message(chat_id, msg.message_id)
     except Exception as e:
         logger.exception("글로벌 시총 오류")
@@ -846,7 +860,7 @@ async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "📈 시장 (종목명 불필요)\n"
         "/m · /market — 시장 자금 동향\n"
         "/vol · /volatility — KOSPI 심리 변동 비율 (최근 3개월)\n"
-        "/global — 글로벌 시가총액 Top 30 (companiesmarketcap + Yahoo Finance)\n"
+        "/gl · /global — 글로벌 시가총액 Top 30 (companiesmarketcap + Yahoo Finance)\n"
         "/cs · /cstocks — 수집 종목 목록\n"
         "/cs add 종목코드 — 종목 추가\n"
         "/cs del 종목코드 — 종목 삭제\n\n"
@@ -1081,34 +1095,37 @@ async def cmd_cstocks(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     elif arg == "add":
         if len(ctx.args) < 2:
-            await update.message.reply_text("사용법: /cs add 005930")
+            await update.message.reply_text("사용법: /cs add 005930  또는  /cs add 삼성전자")
             return
-        code = ctx.args[1].strip()
-        if not (code.isdigit() and len(code) == 6):
-            await update.message.reply_text("❌ 6자리 종목코드를 입력하세요.")
+        query = " ".join(ctx.args[1:]).strip()
+        code, name_or_err = _resolve_code(query)
+        if code is None:
+            await update.message.reply_text(f"❌ {name_or_err}")
             return
         if code in config.COLLECTOR_STOCKS:
-            await update.message.reply_text(f"{code} 이미 목록에 있습니다.")
+            await update.message.reply_text(f"{code} {name_or_err} 이미 목록에 있습니다.")
         else:
             config.COLLECTOR_STOCKS.append(code)
-            stock_name = _get_stock_name(code)
             await update.message.reply_text(
-                f"✅ {code} {stock_name} 추가됨 — 현재 {len(config.COLLECTOR_STOCKS)}개",
+                f"✅ {code} {name_or_err} 추가됨 — 현재 {len(config.COLLECTOR_STOCKS)}개",
             )
 
     elif arg in ("del", "delete", "remove", "rm"):
         if len(ctx.args) < 2:
-            await update.message.reply_text("사용법: /cs del 005930")
+            await update.message.reply_text("사용법: /cs del 005930  또는  /cs del 삼성전자")
             return
-        code = ctx.args[1].strip()
+        query = " ".join(ctx.args[1:]).strip()
+        code, name_or_err = _resolve_code(query)
+        if code is None:
+            await update.message.reply_text(f"❌ {name_or_err}")
+            return
         if code in config.COLLECTOR_STOCKS:
-            stock_name = _get_stock_name(code)
             config.COLLECTOR_STOCKS.remove(code)
             await update.message.reply_text(
-                f"✅ {code} {stock_name} 삭제됨 — 현재 {len(config.COLLECTOR_STOCKS)}개",
+                f"✅ {code} {name_or_err} 삭제됨 — 현재 {len(config.COLLECTOR_STOCKS)}개",
             )
         else:
-            await update.message.reply_text(f"❌ {code} 목록에 없습니다.")
+            await update.message.reply_text(f"❌ {code} {name_or_err} 목록에 없습니다.")
 
     else:
         await update.message.reply_text(
@@ -1239,6 +1256,7 @@ def main():
     app.add_handler(CommandHandler("volatility",  cmd_volatility))
     app.add_handler(CommandHandler("vol",         cmd_volatility))
     app.add_handler(CommandHandler("global",      cmd_global))
+    app.add_handler(CommandHandler("gl",          cmd_global))
     app.add_handler(CommandHandler("cs",        cmd_cstocks))   # 수집 종목 관리
     app.add_handler(CommandHandler("cstocks",   cmd_cstocks))
     app.add_handler(CommandHandler("collect",   cmd_collect))   # 수집기 제어

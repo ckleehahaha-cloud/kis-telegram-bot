@@ -227,10 +227,10 @@ def get_global_data() -> tuple:
 
             if ticker.endswith('.KS'):
                 if ticker == '005930.KS':
-                    name = "삼성전자"
+                    name = "Samsung Elec"
                     market_cap_trillion_krw = get_naver_market_cap_sum(['005930', '005935'])
                 elif ticker == '000660.KS':
-                    name = "SK하이닉스"
+                    name = "SK Hynix"
                     market_cap_trillion_krw = get_naver_market_cap_sum(['000660'])
                 else:
                     name = ticker.split('.')[0]
