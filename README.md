@@ -232,7 +232,6 @@ kis_telegram_bot/
 ├── charts.py           # matplotlib 차트 생성 (BytesIO PNG 반환)
 ├── RobustSTL.py        # RobustSTL 시계열 분해 클래스 (/vol)
 ├── collector.py        # 장중 프로그램 매매 데이터 수집기
-├── globaltop30.py      # 글로벌 시총 참고용 스크립트 (봇 미사용)
 ├── config.py           # API 키 설정 (★ gitignore 처리, 직접 작성 필요)
 ├── config.example.py   # 설정 파일 템플릿
 ├── requirements.txt    # Python 의존성
