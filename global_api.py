@@ -199,6 +199,7 @@ def get_global_data() -> tuple:
         'HKD': 180.0,
         'CHF': 1580.0,
         'JPY': 9.0,
+        'CNY': 195.0,  # 1 CNY ≈ USD/KRW ÷ USD/CNY ≈ 1400/7.2
     }
 
     def _fetch_rate(sym, key, transform=None):
@@ -214,9 +215,11 @@ def get_global_data() -> tuple:
     _fetch_rate("HKDKRW=X", "HKD")
     _fetch_rate("CHFKRW=X", "CHF")
     _fetch_rate("JPYKRW=X", "JPY")
+    _fetch_rate("CNYKRW=X", "CNY")
 
     usd_krw = exchange_rates['USD']
-    logger.info("환율: 1 USD = %.0f KRW, 1 EUR = %.0f KRW", usd_krw, exchange_rates['EUR'])
+    logger.info("환율: 1 USD = %.0f KRW, 1 EUR = %.0f KRW, 1 CNY = %.1f KRW",
+                usd_krw, exchange_rates['EUR'], exchange_rates['CNY'])
 
     data_list = []
 
