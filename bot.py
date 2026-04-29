@@ -796,7 +796,7 @@ async def _send_finance_all(chat_id: int, code: str, name: str, ctx):
 
 
 async def _send_volatility(chat_id: int, ctx):
-    """KOSPI RobustSTL 잔차 비율 (최근 3개월)"""
+    """KOSPI RobustSTL 잔차 비율 (최근 6개월)"""
     msg = await ctx.bot.send_message(chat_id, "⏳ KOSPI 심리 변동 비율 분석 중… (수십 초 소요)", parse_mode="Markdown")
     try:
         def _compute():
@@ -814,7 +814,7 @@ async def _send_volatility(chat_id: int, ctx):
 
             resid_ratio = (stl.resid / close_vals) * 100
 
-            cutoff = close.index[-1] - timedelta(days=91)
+            cutoff = close.index[-1] - timedelta(days=183)
             mask   = close.index >= cutoff
             dates3m = [d.strftime("%m/%d") for d in close.index[mask]]
             ratio3m = resid_ratio[mask].tolist()
@@ -825,11 +825,36 @@ async def _send_volatility(chat_id: int, ctx):
         await ctx.bot.send_photo(
             chat_id,
             photo=charts.chart_volatility(dates3m, ratio3m),
-            caption="*KOSPI* | 심리 변동 비율 (Remainder Ratio) — 최근 3개월\n"
+            caption="*KOSPI* | 심리 변동 비율 (Remainder Ratio) — 최근 6개월\n"
                     "양수(빨강)=추세 대비 과매수, 음수(파랑)=과매도",
             parse_mode="Markdown",
         )
         await ctx.bot.delete_message(chat_id, msg.message_id)
+
+        mean  = sum(ratio3m) / len(ratio3m)
+        sigma = (sum((v - mean) ** 2 for v in ratio3m) / len(ratio3m)) ** 0.5
+        latest = ratio3m[-1]
+        if latest > sigma:
+            signal = "과매수 (+1σ 초과)"
+        elif latest < -sigma:
+            signal = "과매도 (-1σ 미만)"
+        else:
+            signal = "중립"
+
+        n_display = 20
+        rows = list(zip(dates3m, ratio3m))[-n_display:]
+        header = f"{'날짜':>5}  {'비율(%)':>8}"
+        sep    = "-" * len(header)
+        lines  = [header, sep]
+        for d, v in rows:
+            lines.append(f"{d:>5}  {v:>+8.2f}")
+        lines.append(sep)
+        lines.append(f"[최근 {len(ratio3m)}거래일 기준]")
+        lines.append(f"현재:  {latest:>+.2f}%")
+        lines.append(f"평균:  {mean:>+.2f}%")
+        lines.append(f"1σ:   ±{sigma:.2f}%")
+        lines.append(f"신호:  {signal}")
+        await _send_text(ctx.bot, chat_id, "\n".join(lines))
     except Exception as e:
         logger.exception("변동성 분석 오류")
         await ctx.bot.edit_message_text(f"❌ 오류: {e}", chat_id=chat_id, message_id=msg.message_id)
@@ -885,7 +910,7 @@ async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "/v · /volume — 가격대별 거래량 분포\n\n"
         "📈 시장 (종목명 불필요)\n"
         "/m · /market — 시장 자금 동향\n"
-        "/vol · /volatility — KOSPI 심리 변동 비율 (최근 3개월)\n"
+        "/vol · /volatility — KOSPI 심리 변동 비율 (최근 6개월)\n"
         "/gl · /global — 글로벌 시가총액 Top 30 (companiesmarketcap + Yahoo Finance)\n"
         "/cs · /cstocks — 수집 종목 목록\n"
         "/cs add 종목코드 — 종목 추가\n"

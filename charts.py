@@ -1294,7 +1294,7 @@ def chart_volatility(dates, resid_ratio) -> io.BytesIO:
 
     ax.legend(facecolor="#2C3E50", labelcolor="white", fontsize=8, loc="upper left")
     n = len(dates)
-    fig.suptitle(f"KOSPI  |  심리 변동 비율 (Remainder Ratio)  — 최근 3개월 ({n}거래일)",
+    fig.suptitle(f"KOSPI  |  심리 변동 비율 (Remainder Ratio)  — 최근 6개월 ({n}거래일)",
                  color="white", fontsize=13, y=0.98)
     fig.subplots_adjust(bottom=0.18, top=0.92)
     return _buf()
