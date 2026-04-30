@@ -745,29 +745,39 @@ async def _send_global(chat_id: int, ctx):
     msg = await ctx.bot.send_message(
         chat_id, "🌍 글로벌 시가총액 Top 30 조회 중...\n(30~60초 소요)")
     try:
-        df, usd_krw = await asyncio.to_thread(global_api.get_global_data)
+        df, exchange_rates = await asyncio.to_thread(global_api.get_global_data)
 
-        NAME_W = 20
-        header = f"{'#':>2} {'Name':<{NAME_W}} {'MCap(T KRW)':>11}  {'F.NI(T KRW)':>11}  {'FPER':>5}"
+        NAME_W = 15
+        header = (f"{'#':>2}  {'Name':<{NAME_W}} {'MCap':>6}  {'F.NI':>6}  {'FPER':>5}   {'FY/Mo':>5}")
         sep    = "-" * len(header)
         table_lines = [header, sep]
         for rank, row in df.iterrows():
-            name_s = str(row["기업명"])[:NAME_W].ljust(NAME_W)
-            mcap   = row["시가총액 (조 원)"]
-            fni    = row["Forward 순이익 (조 원)"]
-            fper   = row["Forward PER"]
+            name_s  = str(row["기업명"])[:NAME_W].ljust(NAME_W)
+            mcap    = row["시가총액 (조 원)"]
+            fni     = row["Forward 순이익 (조 원)"]
+            fper    = row["Forward PER"]
+            fy_mo   = str(row.get("FY/Mo") or "N/A")
 
-            mcap_s = f"{int(round(mcap)):>11,}"  if isinstance(mcap, (int, float)) else f"{'N/A':>11}"
-            fni_s  = f"{int(round(fni)):>11,}"   if isinstance(fni,  (int, float)) else f"{'N/A':>11}"
-            fper_s = f"{fper:>5.1f}"             if isinstance(fper, (int, float)) else f"{'N/A':>5}"
-            table_lines.append(f"{rank:>2} {name_s} {mcap_s}  {fni_s}  {fper_s}")
+            mcap_s  = f"{int(round(mcap)):>6,}"  if isinstance(mcap, (int, float)) else f"{'N/A':>6}"
+            fni_s   = f"{int(round(fni)):>6,}"   if isinstance(fni,  (int, float)) else f"{'N/A':>6}"
+            fper_s  = f"{fper:>5.1f}"            if isinstance(fper, (int, float)) else f"{'N/A':>5}"
+            fy_mo_s = f"{fy_mo:>5}"
+            table_lines.append(f"{rank:>2}  {name_s} {mcap_s}  {fni_s}  {fper_s}   {fy_mo_s}")
 
+        _RATE_ORDER   = ['USD', 'EUR', 'HKD', 'CHF', 'JPY', 'CNY', 'SAR']
+        _used_cur     = exchange_rates.get('_used', set())
+        rate_str = "  ".join(
+            f"1{k}={int(round(exchange_rates[k])):,}원"
+            for k in _RATE_ORDER if k in _used_cur
+        )
         table = "\n".join(table_lines)
         footer = (
-            f"F.NI/FPER = Forward (컨센서스 추정치)\n"
-            f"환율: 1USD={int(round(usd_krw)):,}원 | 출처: companiesmarketcap, Yahoo Finance"
+            f"{sep}\n"
+            f"환율: {rate_str}\n"
+            f"단위: T KRW\n"
+            f"출처: companiesmarketcap, Yahoo/Naver Finance"
         )
-        text = f"🌍 글로벌 시가총액 Top 30\n\n```\n{table}\n```\n{footer}"
+        text = f"🌍 글로벌 시가총액 Top 30\n\n```\n{table}\n{footer}\n```"
         await ctx.bot.send_message(chat_id, text, parse_mode="Markdown")
         await ctx.bot.delete_message(chat_id, msg.message_id)
     except Exception as e:

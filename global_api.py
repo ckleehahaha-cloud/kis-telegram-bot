@@ -7,7 +7,8 @@ import re
 import io
 import time
 import logging
-from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timedelta
 
 import requests
 import pandas as pd
@@ -15,6 +16,13 @@ import yfinance as yf
 from bs4 import BeautifulSoup
 
 logger = logging.getLogger(__name__)
+
+try:
+    from yahooquery import Ticker as _YQTicker
+    _HAS_YAHOOQUERY = True
+except ImportError:
+    _HAS_YAHOOQUERY = False
+    logger.debug("yahooquery 미설치 — earnings_trend 미사용, yfinance forwardEps 사용")
 
 _HEADERS = {
     'User-Agent': (
@@ -41,6 +49,12 @@ _FALLBACK_TICKERS = [
 _cache_tickers: list | None = None
 _cache_time:    datetime | None = None
 _CACHE_TTL_MIN = 60
+
+_MONTH_STR_TO_NUM = {
+    'January':1,'February':2,'March':3,'April':4,
+    'May':5,'June':6,'July':7,'August':8,
+    'September':9,'October':10,'November':11,'December':12,
+}
 
 
 # ══════════════════════════════════════════════════════════════
@@ -176,21 +190,132 @@ def get_korean_forward_net_income(ticker: str):
 
 
 # ══════════════════════════════════════════════════════════════
+#  Forward EPS 동적 연도 선택 (yahooquery earnings_trend)
+# ══════════════════════════════════════════════════════════════
+def _fiscal_end_from_info(info: dict) -> str | None:
+    """yfinance info 타임스탬프에서 Forward EPS 기준 회계연도 종료일 추정.
+
+    nextFiscalYearEnd 우선, 없으면 lastFiscalYearEnd + 1년. 'YYYY-MM-DD' 반환.
+    """
+    ts = info.get('nextFiscalYearEnd')
+    if ts:
+        try:
+            return datetime.fromtimestamp(int(ts)).strftime('%Y-%m-%d')
+        except Exception:
+            pass
+    ts = info.get('lastFiscalYearEnd')
+    if ts:
+        try:
+            dt = datetime.fromtimestamp(int(ts))
+            return dt.replace(year=dt.year + 1).strftime('%Y-%m-%d')
+        except Exception:
+            pass
+    return None
+
+
+def _fy_label_from_info(info: dict) -> str:
+    """'yy/mm' 형식 FY/Mo 문자열 반환.
+
+    nextFiscalYearEnd / lastFiscalYearEnd 타임스탬프 기반 (_fiscal_end_from_info 재사용).
+    fiscalYearEnd 문자열 필드는 yfinance에서 불안정하므로 사용하지 않음.
+    """
+    end_date = _fiscal_end_from_info(info)
+    if not end_date:
+        return 'N/A'
+    yr = int(end_date[:4]) % 100
+    mo = int(end_date[5:7])
+    return f"{yr:02d}/{mo:02d}"
+
+
+def _get_forward_eps_from_trend(ticker: str) -> tuple[float | None, str | None]:
+    """yahooquery earnings_trend에서 동적 연도 선택으로 Forward EPS 반환.
+
+    yearly period('0y', '+1y' 등)를 순서대로 탐색하여
+    current_date <= endDate + 30일(실적발표 버퍼) 조건을 만족하는
+    첫 번째 연도의 earningsEstimate.avg 반환.
+
+    Returns:
+        (eps, end_date)  — end_date: 'YYYY-MM-DD' 형식 회계연도 종료일
+        yahooquery 미설치 또는 조회 실패 시 (None, None) 반환 → 호출부에서 yfinance fallback.
+    """
+    if not _HAS_YAHOOQUERY:
+        return None, None
+    try:
+        trend_data = _YQTicker(ticker).earnings_trend
+        if not isinstance(trend_data, dict):
+            return None, None
+        trends = trend_data.get(ticker, {}).get('trend', [])
+        now = datetime.now()
+        for period in trends:
+            if not str(period.get('period', '')).endswith('y'):
+                continue
+            end_date_str = period.get('endDate', '')
+            if not end_date_str:
+                continue
+            end_date = datetime.strptime(end_date_str[:10], '%Y-%m-%d')
+            if now <= end_date + timedelta(days=30):
+                eps_avg = period.get('earningsEstimate', {}).get('avg')
+                if eps_avg is not None:
+                    logger.debug(
+                        "%s earnings_trend EPS=%.4f (period=%s, endDate=%s)",
+                        ticker, eps_avg, period['period'], end_date_str[:10],
+                    )
+                    return float(eps_avg), end_date_str[:10]
+    except Exception as e:
+        logger.debug("%s earnings_trend 조회 실패: %s", ticker, e)
+    return None, None
+
+
+def _get_batch_forward_eps(tickers: list) -> dict:
+    """yahooquery 배치 earnings_trend. {ticker: (eps, end_date)} 반환.
+
+    단일 HTTP 요청으로 전체 티커의 연간 EPS 컨센서스를 수집한다.
+    yahooquery 미설치 또는 실패 시 빈 dict 반환.
+    """
+    if not _HAS_YAHOOQUERY or not tickers:
+        return {}
+    result = {}
+    try:
+        trend_data = _YQTicker(tickers).earnings_trend
+        if not isinstance(trend_data, dict):
+            return {}
+        now = datetime.now()
+        for ticker in tickers:
+            entry = trend_data.get(ticker, {})
+            trends = entry.get('trend', []) if isinstance(entry, dict) else []
+            for period in trends:
+                if not str(period.get('period', '')).endswith('y'):
+                    continue
+                end_date_str = period.get('endDate', '')
+                if not end_date_str:
+                    continue
+                end_date = datetime.strptime(end_date_str[:10], '%Y-%m-%d')
+                if now <= end_date + timedelta(days=30):
+                    eps_avg = period.get('earningsEstimate', {}).get('avg')
+                    if eps_avg is not None:
+                        result[ticker] = (float(eps_avg), end_date_str[:10])
+                        break
+    except Exception as e:
+        logger.debug("batch earnings_trend 조회 실패: %s", e)
+    return result
+
+
+# ══════════════════════════════════════════════════════════════
 #  메인 데이터 수집
 # ══════════════════════════════════════════════════════════════
 def get_global_data() -> tuple:
     """글로벌 시가총액 Top 30 수집.
 
     Returns:
-        (df, usd_krw)
-        df: 컬럼 — 티커 / 기업명 / 시가총액 (조 원) / Forward 순이익 (조 원) / Forward PER
+        (df, exchange_rates)
+        df: 컬럼 — 티커 / 기업명 / 시가총액 (조 원) / Forward 순이익 (조 원) / Forward PER / FY/Mo
             인덱스: 1-based 순위
-        usd_krw: float — 적용된 USD/KRW 환율
+        exchange_rates: dict — 통화별 KRW 환율. '_used' 키에 실제 사용된 통화 set 포함.
     """
     target_tickers = get_global_top30_tickers()
     logger.info("데이터 수집 대상: %d개 종목", len(target_tickers))
 
-    # 환율 (기본값: 실패 시 fallback)
+    # ── 1. 환율 병렬 조회 ─────────────────────────────────────────
     exchange_rates = {
         'KRW': 1.0,
         'USD': 1400.0,
@@ -199,49 +324,67 @@ def get_global_data() -> tuple:
         'HKD': 180.0,
         'CHF': 1580.0,
         'JPY': 9.0,
-        'CNY': 195.0,  # 1 CNY ≈ USD/KRW ÷ USD/CNY ≈ 1400/7.2
+        'CNY': 195.0,
     }
 
-    def _fetch_rate(sym, key, transform=None):
+    def _get_close(sym):
         try:
-            val = yf.Ticker(sym).history(period="1d")['Close'].iloc[-1]
-            exchange_rates[key] = transform(val) if transform else float(val)
+            return float(yf.Ticker(sym).history(period="1d")['Close'].iloc[-1])
         except Exception:
-            pass
+            return None
 
-    _fetch_rate("KRW=X",    "USD")
-    _fetch_rate("SAR=X",    "SAR",  lambda r: exchange_rates['USD'] / r)
-    _fetch_rate("EURKRW=X", "EUR")
-    _fetch_rate("HKDKRW=X", "HKD")
-    _fetch_rate("CHFKRW=X", "CHF")
-    _fetch_rate("JPYKRW=X", "JPY")
-    _fetch_rate("CNYKRW=X", "CNY")
+    _rate_syms = ["KRW=X", "EURKRW=X", "HKDKRW=X", "CHFKRW=X", "JPYKRW=X", "CNYKRW=X", "SAR=X"]
+    with ThreadPoolExecutor(max_workers=len(_rate_syms)) as ex:
+        _rate_futures = {sym: ex.submit(_get_close, sym) for sym in _rate_syms}
+        _rate_raw     = {sym: f.result() for sym, f in _rate_futures.items()}
 
-    usd_krw = exchange_rates['USD']
+    _key_map = {"EURKRW=X": "EUR", "HKDKRW=X": "HKD", "CHFKRW=X": "CHF",
+                "JPYKRW=X": "JPY", "CNYKRW=X": "CNY"}
+    if _rate_raw["KRW=X"] is not None:
+        exchange_rates["USD"] = _rate_raw["KRW=X"]
+    for sym, key in _key_map.items():
+        if _rate_raw[sym] is not None:
+            exchange_rates[key] = _rate_raw[sym]
+    if _rate_raw["SAR=X"] is not None:
+        exchange_rates["SAR"] = exchange_rates["USD"] / _rate_raw["SAR=X"]
+
     logger.info("환율: 1 USD = %.0f KRW, 1 EUR = %.0f KRW, 1 CNY = %.1f KRW",
-                usd_krw, exchange_rates['EUR'], exchange_rates['CNY'])
+                exchange_rates['USD'], exchange_rates['EUR'], exchange_rates['CNY'])
 
-    data_list = []
+    # ── 2. yahooquery 배치 earnings_trend (비KS 종목 전체, 단일 호출) ──
+    non_ks_tickers = [t for t in target_tickers if not t.endswith('.KS')]
+    batch_eps = _get_batch_forward_eps(non_ks_tickers)
 
-    for ticker in target_tickers:
+    # ── 3. 종목별 데이터 수집 (병렬) ──────────────────────────────
+    def _process_ticker(ticker):
+        """단일 티커 처리. (data_dict, currency) 또는 None 반환."""
         try:
-            market_cap_trillion_krw      = 0.0
-            forward_net_income_krw_trillion = None
+            mcap_t   = 0.0
+            fni_t    = None
+            t_eps    = None
+            price    = None
+            currency = None
+            fy_label = 'N/A'
 
             if ticker.endswith('.KS'):
                 if ticker == '005930.KS':
-                    name = "Samsung Elec"
-                    market_cap_trillion_krw = get_naver_market_cap_sum(['005930', '005935'])
+                    name   = "Samsung Elec"
+                    mcap_t = get_naver_market_cap_sum(['005930', '005935'])
                 elif ticker == '000660.KS':
-                    name = "SK Hynix"
-                    market_cap_trillion_krw = get_naver_market_cap_sum(['000660'])
+                    name   = "SK Hynix"
+                    mcap_t = get_naver_market_cap_sum(['000660'])
                 else:
-                    name = ticker.split('.')[0]
-                    market_cap_trillion_krw = get_naver_market_cap_sum([ticker.split('.')[0]])
+                    name   = ticker.split('.')[0]
+                    mcap_t = get_naver_market_cap_sum([ticker.split('.')[0]])
 
                 kr_ni = get_korean_forward_net_income(ticker)
                 if kr_ni is not None:
-                    forward_net_income_krw_trillion = kr_ni
+                    fni_t = kr_ni
+                _now     = datetime.now()
+                _fy_year = (_now.year if (_now.month > 3 or (_now.month == 3 and _now.day >= 31))
+                            else _now.year - 1)
+                fy_label = f"{str(_fy_year)[2:]}/12"
+
             else:
                 info     = yf.Ticker(ticker).info
                 name     = info.get('shortName', ticker)
@@ -249,35 +392,64 @@ def get_global_data() -> tuple:
                 rate     = exchange_rates.get(currency, exchange_rates['USD'])
 
                 mcap_raw = info.get('marketCap', 0)
-                market_cap_trillion_krw = (mcap_raw * rate / 1_000_000_000_000) if mcap_raw else 0.0
+                mcap_t   = (mcap_raw * rate / 1_000_000_000_000) if mcap_raw else 0.0
 
-                feps   = info.get('forwardEps')
+                # 배치 EPS 조회 → yfinance fallback
+                if ticker in batch_eps:
+                    t_eps, _ = batch_eps[ticker]
+                    _yf_feps = info.get('forwardEps')
+                    if _yf_feps and _yf_feps > 0 and t_eps > 0 and t_eps / _yf_feps > 3.0:
+                        logger.warning(
+                            "%s earnings_trend EPS=%.4f vs yf forwardEps=%.4f (%.1fx)"
+                            " — currency mismatch, fallback to yf forwardEps",
+                            ticker, t_eps, _yf_feps, t_eps / _yf_feps,
+                        )
+                        t_eps = _yf_feps
+                else:
+                    t_eps = info.get('forwardEps')
+
+                price  = info.get('currentPrice') or info.get('regularMarketPrice')
                 shares = info.get('sharesOutstanding')
-                if feps is not None and shares is not None:
-                    forward_net_income_krw_trillion = feps * shares * rate / 1_000_000_000_000
+                fy_label = _fy_label_from_info(info)
+
+                if t_eps is not None and shares is not None:
+                    fni_t = t_eps * shares * rate / 1_000_000_000_000
 
             forward_per = 'N/A'
-            if forward_net_income_krw_trillion and forward_net_income_krw_trillion > 0:
-                forward_per = round(market_cap_trillion_krw / forward_net_income_krw_trillion, 1)
+            if fni_t and fni_t > 0:
+                if not ticker.endswith('.KS') and t_eps and t_eps > 0 and price:
+                    forward_per = round(price / t_eps, 1)
+                else:
+                    forward_per = round(mcap_t / fni_t, 1)
 
-            data_list.append({
-                "티커":               ticker,
-                "기업명":             name,
-                "시가총액 (조 원)":   round(market_cap_trillion_krw, 1),
-                "Forward 순이익 (조 원)": (
-                    round(forward_net_income_krw_trillion, 1)
-                    if forward_net_income_krw_trillion else 'N/A'
-                ),
-                "Forward PER": forward_per,
-            })
-
-            time.sleep(0.1)
+            return ({
+                "티커":                   ticker,
+                "기업명":                 name,
+                "시가총액 (조 원)":       round(mcap_t, 1),
+                "Forward 순이익 (조 원)": round(fni_t, 1) if fni_t else 'N/A',
+                "Forward PER":            forward_per,
+                "FY/Mo":                  fy_label,
+            }, currency)
 
         except Exception as e:
             logger.warning("%s 데이터 조회 오류: %s", ticker, e)
+            return None
+
+    with ThreadPoolExecutor(max_workers=10) as ex:
+        raw_results = list(ex.map(_process_ticker, target_tickers))
+
+    data_list       = []
+    used_currencies = set()
+    for result in raw_results:
+        if result:
+            data_dict, currency = result
+            data_list.append(data_dict)
+            if currency:
+                used_currencies.add(currency)
 
     df = pd.DataFrame(data_list)
     df = df.sort_values(by="시가총액 (조 원)", ascending=False).reset_index(drop=True)
     df = df.head(30)
     df.index = df.index + 1
-    return df, usd_krw
+    exchange_rates['_used'] = used_currencies
+    return df, exchange_rates
