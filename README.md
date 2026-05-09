@@ -248,7 +248,8 @@ kis_telegram_bot/
 ├── config.py           # API 키 설정 (★ gitignore 처리, 직접 작성 필요)
 ├── config.example.py   # 설정 파일 템플릿
 ├── requirements.txt    # Python 의존성
-└── data/               # collector 저장 JSON (런타임 생성)
+├── bot.log             # 봇 로그 파일 (자동 생성, 최대 5MB × 3개 순환)
+└── data/               # collector 저장 JSON (런타임 생성, 2일 이후 자동 삭제)
 ```
 
 ---

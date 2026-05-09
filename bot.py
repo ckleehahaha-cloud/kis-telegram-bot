@@ -16,9 +16,11 @@ bot.py  –  텔레그램 봇 메인
 
 import asyncio
 import logging
+import logging.handlers
 import threading
 import unicodedata
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time as dtime
+from pathlib import Path
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, MessageHandler,
@@ -31,10 +33,22 @@ import charts
 import global_api
 import collector as _collector
 
-logging.basicConfig(
-    format="%(asctime)s [%(levelname)s] %(name)s – %(message)s",
-    level=getattr(logging, config.LOG_LEVEL, logging.INFO),
+_LOG_FILE      = Path(__file__).parent / "bot.log"
+_LOG_MAX_BYTES = 5 * 1024 * 1024   # 5 MB
+_LOG_BACKUP    = 3                  # bot.log.1 ~ bot.log.3
+
+_fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s – %(message)s")
+_level = getattr(logging, config.LOG_LEVEL, logging.INFO)
+
+_stream_handler = logging.StreamHandler()
+_stream_handler.setFormatter(_fmt)
+
+_file_handler = logging.handlers.RotatingFileHandler(
+    _LOG_FILE, maxBytes=_LOG_MAX_BYTES, backupCount=_LOG_BACKUP, encoding="utf-8"
 )
+_file_handler.setFormatter(_fmt)
+
+logging.basicConfig(level=_level, handlers=[_stream_handler, _file_handler])
 logger = logging.getLogger(__name__)
 
 
@@ -1270,15 +1284,50 @@ async def cmd_collect(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 # ══════════════════════════════════════════════════════════════
+#  주기적 파일 정리
+# ══════════════════════════════════════════════════════════════
+_DATA_DIR      = Path(__file__).parent / "data"
+_DATA_KEEP_DAYS = 2  # 오늘 포함 최근 N일 data 파일 유지
+
+def _do_cleanup() -> int:
+    cutoff = datetime.now() - timedelta(days=_DATA_KEEP_DAYS)
+    removed = 0
+    if _DATA_DIR.exists():
+        for f in _DATA_DIR.glob("program_*.json"):
+            try:
+                if datetime.fromtimestamp(f.stat().st_mtime) < cutoff:
+                    f.unlink()
+                    removed += 1
+            except Exception as e:
+                logger.warning("파일 삭제 실패 %s: %s", f.name, e)
+    return removed
+
+async def _cleanup_old_files(context: ContextTypes.DEFAULT_TYPE) -> None:
+    removed = _do_cleanup()
+    logger.info("[cleanup] data/ 파일 %d개 삭제 완료", removed)
+
+
+# ══════════════════════════════════════════════════════════════
 #  메인
 # ══════════════════════════════════════════════════════════════
 def main():
+    # 시작 시 오래된 data/ 파일 정리
+    removed = _do_cleanup()
+    logger.info("[startup cleanup] data/ 파일 %d개 삭제 완료", removed)
+
     # config에서 수집기 자동 시작
     if config.COLLECTOR_ENABLED and config.COLLECTOR_STOCKS:
         _start_collector()
         logger.info("수집기 자동 시작: %s", config.COLLECTOR_STOCKS)
 
     app = Application.builder().token(config.TELEGRAM_BOT_TOKEN).read_timeout(60).write_timeout(60).connect_timeout(60).build()
+
+    # 매일 08:30에 오래된 data/ 파일 정리
+    app.job_queue.run_daily(
+        _cleanup_old_files,
+        time=dtime(8, 30, tzinfo=None),
+        name="cleanup_old_files",
+    )
 
     app.add_handler(CommandHandler("start",    cmd_start))
     app.add_handler(CommandHandler("help",     cmd_help))

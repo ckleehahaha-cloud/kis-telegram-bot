@@ -17,6 +17,7 @@ kis_telegram_bot/
 ├── RobustSTL.py     # RobustSTL 시계열 분해 클래스 (/vol 에서 사용)
 ├── collector.py     # 장중 프로그램 매매 데이터 주기 수집 (별도 프로세스)
 ├── config.py        # API 키, 계좌번호, 설정값 (★ 실제 값은 직접 입력 필요)
+├── bot.log          # 봇 로그 파일 (RotatingFileHandler, 최대 5MB × 3개, 런타임 생성)
 ├── .stock_list.json # 종목 코드/이름 로컬 캐시 (KIS API에서 자동 갱신)
 └── data/            # collector가 저장하는 당일 프로그램 매매 JSON (런타임 생성)
 ```
@@ -119,6 +120,10 @@ python collector.py
 - `_start_collector()` / `_stop_collector()` — 봇 내부에서 수집기 스레드 제어.
 - `ALLOWED_USER_IDS`가 설정된 경우 모든 명령어 앞에서 접근 제어.
 - 모든 텍스트 출력(raw data, 요약, help, cs 등)은 parse_mode 없는 일반 텍스트. 차트 캡션·상태 메시지만 `parse_mode="Markdown"` 유지.
+- **로그 파일**: `RotatingFileHandler`로 `bot.log`에 기록. 5MB 초과 시 롤오버 → `bot.log.1~3`. stdout 동시 출력 유지.
+- **파일 정리**: `_do_cleanup()` — `data/program_*.json` 중 수정 시각 기준 2일(=`_DATA_KEEP_DAYS`) 이전 파일 삭제. 동기 함수.
+  - `main()` 진입 시 즉시 호출 (시작 시점에 쌓인 파일 정리).
+  - `_cleanup_old_files(context)` — async 래퍼. `job_queue.run_daily(time=08:30)`으로 매일 실행.
 
 ### `global_api.py`
 
