@@ -789,7 +789,10 @@ async def _send_global(chat_id: int, ctx):
             f"{sep}\n"
             f"환율: {rate_str}\n"
             f"단위: T KRW\n"
-            f"출처: companiesmarketcap, Yahoo/Naver Finance"
+            f"출처: companiesmarketcap, Yahoo/Naver Finance\n"
+            f"F.NI  : 컨센서스 추정 순이익\n"
+            f"FPER  : 현재가 / Forward EPS\n"
+            f"FY/Mo : 추정 기준 회계연도/결산월"
         )
         text = f"🌍 글로벌 시가총액 Top 30\n\n```\n{table}\n{footer}\n```"
         await ctx.bot.send_message(chat_id, text, parse_mode="Markdown")
