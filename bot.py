@@ -19,7 +19,7 @@ import logging
 import logging.handlers
 import threading
 import unicodedata
-from datetime import datetime, timedelta, time as dtime
+from datetime import datetime, timedelta
 from pathlib import Path
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -1302,9 +1302,17 @@ def _do_cleanup() -> int:
                 logger.warning("파일 삭제 실패 %s: %s", f.name, e)
     return removed
 
-async def _cleanup_old_files(context: ContextTypes.DEFAULT_TYPE) -> None:
-    removed = _do_cleanup()
-    logger.info("[cleanup] data/ 파일 %d개 삭제 완료", removed)
+def _cleanup_scheduler() -> None:
+    """매일 08:30에 _do_cleanup()을 실행하는 데몬 스레드"""
+    import time as _time
+    while True:
+        now = datetime.now()
+        target = now.replace(hour=8, minute=30, second=0, microsecond=0)
+        if now >= target:
+            target += timedelta(days=1)
+        _time.sleep((target - datetime.now()).total_seconds())
+        removed = _do_cleanup()
+        logger.info("[cleanup] data/ 파일 %d개 삭제 완료", removed)
 
 
 # ══════════════════════════════════════════════════════════════
@@ -1320,14 +1328,10 @@ def main():
         _start_collector()
         logger.info("수집기 자동 시작: %s", config.COLLECTOR_STOCKS)
 
-    app = Application.builder().token(config.TELEGRAM_BOT_TOKEN).read_timeout(60).write_timeout(60).connect_timeout(60).build()
+    t = threading.Thread(target=_cleanup_scheduler, daemon=True, name="cleanup-scheduler")
+    t.start()
 
-    # 매일 08:30에 오래된 data/ 파일 정리
-    app.job_queue.run_daily(
-        _cleanup_old_files,
-        time=dtime(8, 30, tzinfo=None),
-        name="cleanup_old_files",
-    )
+    app = Application.builder().token(config.TELEGRAM_BOT_TOKEN).read_timeout(60).write_timeout(60).connect_timeout(60).build()
 
     app.add_handler(CommandHandler("start",    cmd_start))
     app.add_handler(CommandHandler("help",     cmd_help))
