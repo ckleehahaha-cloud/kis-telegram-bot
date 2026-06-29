@@ -166,10 +166,10 @@ def get_naver_market_cap_sum(codes: list) -> float:
 
 
 def get_korean_forward_net_income(ticker: str):
-    """네이버 금융에서 한국 주식의 Forward 순이익(컨센서스)을 조 원 단위로 반환.
+    """네이버 금융에서 한국 주식의 연간 Forward 순이익(컨센서스)을 조 원 단위로 반환.
 
-    컬럼 헤더에서 '(E)' 표시된 추정 연도 열을 동적으로 선택한다.
-    추정 열이 없으면 마지막 유효 숫자 열을 사용한다.
+    - 분기 테이블(YYYY.MM 컬럼의 MM이 다양) 건너뜀 → 연간 테이블만 사용.
+    - 추정 열 선택: 헤더에 '(E)' 포함된 열 중 마지막. 없으면 마지막 유효 숫자 열.
     """
     code = ticker.split('.')[0]
     try:
@@ -184,6 +184,19 @@ def get_korean_forward_net_income(ticker: str):
             cols = list(tbl.columns)
             label_col = cols[0]
             data_cols = cols[1:]
+
+            # 연간 테이블 판별: YYYY.MM 형식 컬럼의 MM이 모두 동일 → 연간
+            #                   MM이 다양 (03/06/09/12) → 분기 테이블 → 건너뜀
+            months = set()
+            ym_count = 0
+            for c in data_cols:
+                m = re.search(r'\d{4}\.(\d{2})', str(c))
+                if m:
+                    months.add(m.group(1))
+                    ym_count += 1
+            if ym_count >= 2 and len(months) > 1:
+                logger.debug("네이버 분기 테이블 건너뜀 (%s): %s", code, [str(c) for c in data_cols])
+                continue
 
             # 추정 연도 열: 헤더에 '(E)' 포함된 열 중 마지막. 없으면 마지막 데이터 열.
             est_cols = [c for c in data_cols if '(E)' in str(c) or '(e)' in str(c)]
@@ -328,9 +341,13 @@ def _get_batch_forward_eps(tickers: list) -> dict:
                 end_date = datetime.strptime(end_date_str[:10], '%Y-%m-%d')
                 if now <= end_date + timedelta(days=30):
                     eps_avg = period.get('earningsEstimate', {}).get('avg')
-                    if eps_avg is not None:
-                        result[ticker] = (float(eps_avg), end_date_str[:10])
-                        break
+                    # eps가 None이어도 end_date를 기록하고 break.
+                    # None이면 caller(_process_ticker)가 trailingEps fallback 처리.
+                    result[ticker] = (
+                        float(eps_avg) if eps_avg is not None else None,
+                        end_date_str[:10],
+                    )
+                    break
     except Exception as e:
         logger.debug("batch earnings_trend 조회 실패: %s", e)
     return result
@@ -441,19 +458,28 @@ def get_global_data() -> tuple:
                 mcap_raw = info.get('marketCap', 0)
                 mcap_t   = (mcap_raw * rate / 1_000_000_000_000) if mcap_raw else 0.0
 
-                # 배치 EPS 조회 → yfinance fallback
+                # 배치 EPS 조회 → fallback 순서: yahooquery → trailingEps → forwardEps
                 _eps_end_date = None
                 if ticker in batch_eps:
                     t_eps, _eps_end_date = batch_eps[ticker]
-                    _yf_feps = info.get('forwardEps')
-                    if _yf_feps and _yf_feps > 0 and t_eps > 0 and t_eps / _yf_feps > 3.0:
-                        logger.warning(
-                            "%s earnings_trend EPS=%.4f vs yf forwardEps=%.4f (%.1fx)"
-                            " — currency mismatch, fallback to yf forwardEps",
-                            ticker, t_eps, _yf_feps, t_eps / _yf_feps,
+                    if t_eps is None:
+                        # 해당 회계연도 consensus 없음 (연도 거의 완료됨).
+                        # trailingEps(TTM 실적)를 proxy로 사용하되 FY/Mo 레이블은 유지.
+                        t_eps = info.get('trailingEps')
+                        logger.debug(
+                            "%s earningsEstimate 없음 → trailingEps=%.4f 사용 (FY %s)",
+                            ticker, t_eps or 0, _eps_end_date,
                         )
-                        t_eps = _yf_feps
-                        _eps_end_date = None  # yfinance fallback → fy_label도 yfinance 기준
+                    else:
+                        _yf_feps = info.get('forwardEps')
+                        if _yf_feps and _yf_feps > 0 and t_eps > 0 and t_eps / _yf_feps > 3.0:
+                            logger.warning(
+                                "%s earnings_trend EPS=%.4f vs yf forwardEps=%.4f (%.1fx)"
+                                " — currency mismatch, fallback to yf forwardEps",
+                                ticker, t_eps, _yf_feps, t_eps / _yf_feps,
+                            )
+                            t_eps = _yf_feps
+                            _eps_end_date = None  # yfinance fallback → fy_label도 yfinance 기준
                 else:
                     t_eps = info.get('forwardEps')
 
