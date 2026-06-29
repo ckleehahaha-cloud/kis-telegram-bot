@@ -270,6 +270,9 @@ def _get_batch_forward_eps(tickers: list) -> dict:
     """yahooquery 배치 earnings_trend. {ticker: (eps, end_date)} 반환.
 
     단일 HTTP 요청으로 전체 티커의 연간 EPS 컨센서스를 수집한다.
+    연간 period를 순서대로 탐색하여 endDate가 아직 지나지 않았고 EPS 추정치(avg)가
+    실제로 존재하는 첫 번째 period를 선택한다.
+    EPS 추정치가 None인 period는 건너뛰어 F.NI ↔ FY/Mo 정합을 보장한다.
     yahooquery 미설치 또는 실패 시 빈 dict 반환.
     """
     if not _HAS_YAHOOQUERY or not tickers:
@@ -292,13 +295,11 @@ def _get_batch_forward_eps(tickers: list) -> dict:
                 end_date = datetime.strptime(end_date_str[:10], '%Y-%m-%d')
                 if now <= end_date + timedelta(days=30):
                     eps_avg = period.get('earningsEstimate', {}).get('avg')
-                    # eps가 None이어도 end_date를 기록하고 break.
-                    # None이면 caller(_process_ticker)가 trailingEps fallback 처리.
-                    result[ticker] = (
-                        float(eps_avg) if eps_avg is not None else None,
-                        end_date_str[:10],
-                    )
-                    break
+                    if eps_avg is not None:
+                        # EPS 추정치가 있는 첫 번째 유효 period 선택.
+                        # None인 period는 건너뛰어 F.NI(값)과 FY/Mo(레이블)가 같은 회계연도를 가리키게 함.
+                        result[ticker] = (float(eps_avg), end_date_str[:10])
+                        break
     except Exception as e:
         logger.debug("batch earnings_trend 조회 실패: %s", e)
     return result
@@ -409,29 +410,25 @@ def get_global_data() -> tuple:
                 mcap_raw = info.get('marketCap', 0)
                 mcap_t   = (mcap_raw * rate / 1_000_000_000_000) if mcap_raw else 0.0
 
-                # 배치 EPS 조회 → fallback 순서: yahooquery → trailingEps → forwardEps
+                # 배치 EPS 조회 → fallback 순서: yahooquery(non-None) → yfinance forwardEps
+                # _get_batch_forward_eps는 EPS 추정치가 있는 period만 저장하므로 t_eps는 항상 non-None.
                 _eps_end_date = None
                 if ticker in batch_eps:
                     t_eps, _eps_end_date = batch_eps[ticker]
-                    if t_eps is None:
-                        # 해당 회계연도 consensus 없음 (연도 거의 완료됨).
-                        # trailingEps(TTM 실적)를 proxy로 사용하되 FY/Mo 레이블은 유지.
-                        t_eps = info.get('trailingEps')
-                        logger.debug(
-                            "%s earningsEstimate 없음 → trailingEps=%.4f 사용 (FY %s)",
-                            ticker, t_eps or 0, _eps_end_date,
+                    # 통화 불일치 검사: yahooquery EPS가 yfinance의 10배 초과이면 currency mismatch.
+                    # (합리적인 FY 성장률 범위인 3~5배는 오탐지 방지를 위해 허용.)
+                    _yf_feps = info.get('forwardEps')
+                    if _yf_feps and _yf_feps > 0 and t_eps > 0 and t_eps / _yf_feps > 10.0:
+                        logger.warning(
+                            "%s earnings_trend EPS=%.4f vs yf forwardEps=%.4f (%.1fx)"
+                            " — currency mismatch 의심, yf forwardEps 사용",
+                            ticker, t_eps, _yf_feps, t_eps / _yf_feps,
                         )
-                    else:
-                        _yf_feps = info.get('forwardEps')
-                        if _yf_feps and _yf_feps > 0 and t_eps > 0 and t_eps / _yf_feps > 3.0:
-                            logger.warning(
-                                "%s earnings_trend EPS=%.4f vs yf forwardEps=%.4f (%.1fx)"
-                                " — currency mismatch, fallback to yf forwardEps",
-                                ticker, t_eps, _yf_feps, t_eps / _yf_feps,
-                            )
-                            t_eps = _yf_feps
-                            _eps_end_date = None  # yfinance fallback → fy_label도 yfinance 기준
+                        t_eps = _yf_feps
+                        _eps_end_date = None  # yfinance 기반 → FY/Mo도 yfinance 기준
                 else:
+                    # yahooquery에 해당 티커 데이터 없음 → yfinance forwardEps 사용.
+                    # nextFiscalYearEnd와 forwardEps는 yfinance 내부에서 동일 FY를 가리킴.
                     t_eps = info.get('forwardEps')
 
                 price  = info.get('currentPrice') or info.get('regularMarketPrice')
