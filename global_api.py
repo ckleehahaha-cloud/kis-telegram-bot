@@ -165,8 +165,12 @@ def get_naver_market_cap_sum(codes: list) -> float:
     return sum(get_naver_market_cap(code) for code in codes)
 
 
-def get_korean_forward_net_income(ticker: str):
-    """네이버 금융에서 한국 주식의 Forward 순이익(컨센서스)을 조 원 단위로 반환."""
+def get_korean_forward_net_income(ticker: str) -> tuple:
+    """네이버 금융에서 한국 주식의 Forward 순이익(컨센서스)을 조 원 단위로 반환.
+
+    Returns: (ni_조원: float | None, fy_label: str | None)
+    fy_label은 실제로 값을 읽어온 컬럼 헤더에서 추출한 'yy/12' 형식.
+    """
     code = ticker.split('.')[0]
     try:
         url = f"https://finance.naver.com/item/main.naver?code={code}"
@@ -175,18 +179,31 @@ def get_korean_forward_net_income(ticker: str):
 
         for tbl in tables:
             if '당기순이익' in tbl.to_string():
+                cols = list(tbl.columns)
                 for row in tbl.to_records():
                     if '당기순이익' in str(row[1]) and '지배주주' not in str(row[1]):
+                        # to_records()는 인덱스를 row[0]에 붙임.
+                        # row[5] → tbl.columns[4], row[4] → tbl.columns[3].
+                        col_idx = 4  # 기본: row[5]
                         val = str(row[5]).replace(',', '').strip()
                         if val in ['nan', '-', 'NaN', ''] or not any(c.isdigit() for c in val):
+                            col_idx = 3  # fallback: row[4]
                             val = str(row[4]).replace(',', '').strip()
                         try:
-                            return float(val) / 10000.0
+                            ni = float(val) / 10000.0
+                            # 실제로 값을 읽어온 컬럼 헤더에서 연도 추출 → fy_label 생성.
+                            fy_label = None
+                            if col_idx < len(cols):
+                                m = re.search(r'(20\d{2})', str(cols[col_idx]))
+                                if m:
+                                    yr = int(m.group(1)) % 100
+                                    fy_label = f"{yr:02d}/12"
+                            return ni, fy_label
                         except ValueError:
-                            return None
+                            return None, None
     except Exception as e:
         logger.debug("네이버 Forward 순이익 크롤링 실패 %s: %s", ticker, e)
-    return None
+    return None, None
 
 
 # ══════════════════════════════════════════════════════════════
@@ -393,13 +410,17 @@ def get_global_data() -> tuple:
                     name   = ticker.split('.')[0]
                     mcap_t = get_naver_market_cap_sum([ticker.split('.')[0]])
 
-                kr_ni = get_korean_forward_net_income(ticker)
+                kr_ni, kr_fy = get_korean_forward_net_income(ticker)
                 if kr_ni is not None:
                     fni_t = kr_ni
-                _now     = datetime.now()
-                _fy_year = (_now.year if (_now.month > 3 or (_now.month == 3 and _now.day >= 31))
-                            else _now.year - 1)
-                fy_label = f"{str(_fy_year)[2:]}/12"
+                if kr_fy is not None:
+                    fy_label = kr_fy
+                else:
+                    # 헤더 파싱 실패 시 현재 날짜 기반 fallback
+                    _now = datetime.now()
+                    _fy_year = (_now.year if (_now.month > 3 or (_now.month == 3 and _now.day >= 31))
+                                else _now.year - 1)
+                    fy_label = f"{str(_fy_year)[2:]}/12"
 
             else:
                 info     = yf.Ticker(ticker).info
