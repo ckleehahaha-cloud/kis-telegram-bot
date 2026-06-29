@@ -166,7 +166,11 @@ def get_naver_market_cap_sum(codes: list) -> float:
 
 
 def get_korean_forward_net_income(ticker: str):
-    """네이버 금융에서 한국 주식의 Forward 순이익(컨센서스)을 조 원 단위로 반환."""
+    """네이버 금융에서 한국 주식의 Forward 순이익(컨센서스)을 조 원 단위로 반환.
+
+    컬럼 헤더에서 '(E)' 표시된 추정 연도 열을 동적으로 선택한다.
+    추정 열이 없으면 마지막 유효 숫자 열을 사용한다.
+    """
     code = ticker.split('.')[0]
     try:
         url = f"https://finance.naver.com/item/main.naver?code={code}"
@@ -174,16 +178,48 @@ def get_korean_forward_net_income(ticker: str):
         tables = pd.read_html(io.StringIO(res.text))
 
         for tbl in tables:
-            if '당기순이익' in tbl.to_string():
-                for row in tbl.to_records():
-                    if '당기순이익' in str(row[1]) and '지배주주' not in str(row[1]):
-                        val = str(row[5]).replace(',', '').strip()
-                        if val in ['nan', '-', 'NaN', ''] or not any(c.isdigit() for c in val):
-                            val = str(row[4]).replace(',', '').strip()
-                        try:
-                            return float(val) / 10000.0
-                        except ValueError:
-                            return None
+            if '당기순이익' not in tbl.to_string():
+                continue
+
+            cols = list(tbl.columns)
+            label_col = cols[0]
+            data_cols = cols[1:]
+
+            # 추정 연도 열: 헤더에 '(E)' 포함된 열 중 마지막. 없으면 마지막 데이터 열.
+            est_cols = [c for c in data_cols if '(E)' in str(c) or '(e)' in str(c)]
+            target_col = est_cols[-1] if est_cols else (data_cols[-1] if data_cols else None)
+            if target_col is None:
+                continue
+
+            for _, row in tbl.iterrows():
+                label = str(row[label_col])
+                if '당기순이익' not in label or '지배주주' in label:
+                    continue
+
+                val_raw = str(row[target_col]).replace(',', '').strip()
+
+                # 대상 열이 비어 있으면 마지막 유효 숫자 열로 fallback
+                if val_raw in ('nan', '-', 'NaN', '') or not any(c.isdigit() for c in val_raw):
+                    for c in reversed(data_cols):
+                        s = str(row[c]).replace(',', '').strip()
+                        if s not in ('nan', '-', 'NaN', '') and any(ch.isdigit() for ch in s):
+                            val_raw = s
+                            target_col = c
+                            break
+                    else:
+                        continue
+
+                try:
+                    val_num = float(val_raw)
+                    result = val_num / 10000.0
+                    logger.info(
+                        "네이버 Forward NI (%s): 컬럼='%s' 억원=%.0f → %.2f 조원",
+                        code, target_col, val_num, result,
+                    )
+                    return result
+                except ValueError:
+                    continue
+
     except Exception as e:
         logger.debug("네이버 Forward 순이익 크롤링 실패 %s: %s", ticker, e)
     return None
@@ -338,13 +374,24 @@ def get_global_data() -> tuple:
         _rate_futures = {sym: ex.submit(_get_close, sym) for sym in _rate_syms}
         _rate_raw     = {sym: f.result() for sym, f in _rate_futures.items()}
 
-    _key_map = {"EURKRW=X": "EUR", "HKDKRW=X": "HKD", "CHFKRW=X": "CHF",
-                "JPYKRW=X": "JPY", "CNYKRW=X": "CNY"}
-    if _rate_raw["KRW=X"] is not None:
-        exchange_rates["USD"] = _rate_raw["KRW=X"]
-    for sym, key in _key_map.items():
-        if _rate_raw[sym] is not None:
-            exchange_rates[key] = _rate_raw[sym]
+    # 각 환율의 합리적인 범위 (KRW 기준). 이 범위를 벗어나면 yfinance 오류로 간주해 기본값 유지.
+    _RATE_BOUNDS = {
+        "KRW=X":    ("USD", 800,  3000),
+        "EURKRW=X": ("EUR", 1000, 4000),
+        "HKDKRW=X": ("HKD", 100,  600),
+        "CHFKRW=X": ("CHF", 1000, 4000),
+        "JPYKRW=X": ("JPY", 5,    30),
+        "CNYKRW=X": ("CNY", 100,  500),
+    }
+    for sym, (key, lo, hi) in _RATE_BOUNDS.items():
+        raw = _rate_raw.get(sym)
+        if raw is None:
+            continue
+        if lo <= raw <= hi:
+            exchange_rates[key] = raw
+        else:
+            logger.warning("환율 이상값 무시 %s=%.2f (기대범위 %d~%d) — 기본값 %.0f 사용",
+                           sym, raw, lo, hi, exchange_rates[key])
     if _rate_raw["SAR=X"] is not None:
         exchange_rates["SAR"] = exchange_rates["USD"] / _rate_raw["SAR=X"]
 
@@ -395,8 +442,9 @@ def get_global_data() -> tuple:
                 mcap_t   = (mcap_raw * rate / 1_000_000_000_000) if mcap_raw else 0.0
 
                 # 배치 EPS 조회 → yfinance fallback
+                _eps_end_date = None
                 if ticker in batch_eps:
-                    t_eps, _ = batch_eps[ticker]
+                    t_eps, _eps_end_date = batch_eps[ticker]
                     _yf_feps = info.get('forwardEps')
                     if _yf_feps and _yf_feps > 0 and t_eps > 0 and t_eps / _yf_feps > 3.0:
                         logger.warning(
@@ -405,15 +453,28 @@ def get_global_data() -> tuple:
                             ticker, t_eps, _yf_feps, t_eps / _yf_feps,
                         )
                         t_eps = _yf_feps
+                        _eps_end_date = None  # yfinance fallback → fy_label도 yfinance 기준
                 else:
                     t_eps = info.get('forwardEps')
 
                 price  = info.get('currentPrice') or info.get('regularMarketPrice')
                 shares = info.get('sharesOutstanding')
-                fy_label = _fy_label_from_info(info)
+                # FY/Mo는 EPS 출처와 동일한 회계연도를 반영해야 한다.
+                # yahooquery EPS 사용 시 → 해당 period endDate 기반 레이블 사용.
+                # yfinance EPS 사용 시 → yfinance nextFiscalYearEnd 기반 레이블 사용.
+                if _eps_end_date:
+                    _yr = int(_eps_end_date[:4]) % 100
+                    _mo = int(_eps_end_date[5:7])
+                    fy_label = f"{_yr:02d}/{_mo:02d}"
+                else:
+                    fy_label = _fy_label_from_info(info)
 
                 if t_eps is not None and shares is not None:
                     fni_t = t_eps * shares * rate / 1_000_000_000_000
+                    logger.info(
+                        "%s Forward NI: EPS=%.4f shares=%.3fB rate=%.0f → %.2f 조원",
+                        ticker, t_eps, shares / 1e9, rate, fni_t,
+                    )
 
             forward_per = 'N/A'
             if fni_t and fni_t > 0:
