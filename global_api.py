@@ -166,11 +166,7 @@ def get_naver_market_cap_sum(codes: list) -> float:
 
 
 def get_korean_forward_net_income(ticker: str):
-    """네이버 금융에서 한국 주식의 연간 Forward 순이익(컨센서스)을 조 원 단위로 반환.
-
-    - 분기 테이블(YYYY.MM 컬럼의 MM이 다양) 건너뜀 → 연간 테이블만 사용.
-    - 추정 열 선택: 헤더에 '(E)' 포함된 열 중 마지막. 없으면 마지막 유효 숫자 열.
-    """
+    """네이버 금융에서 한국 주식의 Forward 순이익(컨센서스)을 조 원 단위로 반환."""
     code = ticker.split('.')[0]
     try:
         url = f"https://finance.naver.com/item/main.naver?code={code}"
@@ -178,61 +174,16 @@ def get_korean_forward_net_income(ticker: str):
         tables = pd.read_html(io.StringIO(res.text))
 
         for tbl in tables:
-            if '당기순이익' not in tbl.to_string():
-                continue
-
-            cols = list(tbl.columns)
-            label_col = cols[0]
-            data_cols = cols[1:]
-
-            # 연간 테이블 판별: YYYY.MM 형식 컬럼의 MM이 모두 동일 → 연간
-            #                   MM이 다양 (03/06/09/12) → 분기 테이블 → 건너뜀
-            months = set()
-            ym_count = 0
-            for c in data_cols:
-                m = re.search(r'\d{4}\.(\d{2})', str(c))
-                if m:
-                    months.add(m.group(1))
-                    ym_count += 1
-            if ym_count >= 2 and len(months) > 1:
-                logger.debug("네이버 분기 테이블 건너뜀 (%s): %s", code, [str(c) for c in data_cols])
-                continue
-
-            # 추정 연도 열: 헤더에 '(E)' 포함된 열 중 마지막. 없으면 마지막 데이터 열.
-            est_cols = [c for c in data_cols if '(E)' in str(c) or '(e)' in str(c)]
-            target_col = est_cols[-1] if est_cols else (data_cols[-1] if data_cols else None)
-            if target_col is None:
-                continue
-
-            for _, row in tbl.iterrows():
-                label = str(row[label_col])
-                if '당기순이익' not in label or '지배주주' in label:
-                    continue
-
-                val_raw = str(row[target_col]).replace(',', '').strip()
-
-                # 대상 열이 비어 있으면 마지막 유효 숫자 열로 fallback
-                if val_raw in ('nan', '-', 'NaN', '') or not any(c.isdigit() for c in val_raw):
-                    for c in reversed(data_cols):
-                        s = str(row[c]).replace(',', '').strip()
-                        if s not in ('nan', '-', 'NaN', '') and any(ch.isdigit() for ch in s):
-                            val_raw = s
-                            target_col = c
-                            break
-                    else:
-                        continue
-
-                try:
-                    val_num = float(val_raw)
-                    result = val_num / 10000.0
-                    logger.info(
-                        "네이버 Forward NI (%s): 컬럼='%s' 억원=%.0f → %.2f 조원",
-                        code, target_col, val_num, result,
-                    )
-                    return result
-                except ValueError:
-                    continue
-
+            if '당기순이익' in tbl.to_string():
+                for row in tbl.to_records():
+                    if '당기순이익' in str(row[1]) and '지배주주' not in str(row[1]):
+                        val = str(row[5]).replace(',', '').strip()
+                        if val in ['nan', '-', 'NaN', ''] or not any(c.isdigit() for c in val):
+                            val = str(row[4]).replace(',', '').strip()
+                        try:
+                            return float(val) / 10000.0
+                        except ValueError:
+                            return None
     except Exception as e:
         logger.debug("네이버 Forward 순이익 크롤링 실패 %s: %s", ticker, e)
     return None
