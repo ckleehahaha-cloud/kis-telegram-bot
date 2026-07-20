@@ -239,7 +239,7 @@ def _fy_label_from_info(info: dict) -> str:
     end_date = _fiscal_end_from_info(info)
     if not end_date:
         return 'N/A'
-    yr = int(end_date[:4]) % 100
+    yr = (int(end_date[:4]) + 1) % 100
     mo = int(end_date[5:7])
     return f"{yr:02d}/{mo:02d}"
 
@@ -458,7 +458,7 @@ def get_global_data() -> tuple:
                 # yahooquery EPS 사용 시 → 해당 period endDate 기반 레이블 사용.
                 # yfinance EPS 사용 시 → yfinance nextFiscalYearEnd 기반 레이블 사용.
                 if _eps_end_date:
-                    _yr = int(_eps_end_date[:4]) % 100
+                    _yr = (int(_eps_end_date[:4]) + 1) % 100
                     _mo = int(_eps_end_date[5:7])
                     fy_label = f"{_yr:02d}/{_mo:02d}"
                 else:
