@@ -283,6 +283,27 @@ def _get_forward_eps_from_trend(ticker: str) -> tuple[float | None, str | None]:
     return None, None
 
 
+def _get_ticker_info(ticker: str, retries: int = 3) -> dict:
+    """yf.Ticker(ticker).info를 재시도 로직과 함께 조회.
+
+    Yahoo Finance 동시 요청 제한(429)에 걸리면 exception 없이 일부 필드가
+    누락된 채(예: shortName만 있고 marketCap 없음) info가 반환되는 경우가 있음.
+    marketCap이 없으면 실패로 간주하고 backoff 후 재시도한다.
+    """
+    info = {}
+    for attempt in range(retries):
+        try:
+            info = yf.Ticker(ticker).info
+            if info.get('marketCap'):
+                return info
+            logger.debug("%s info 불완전 (marketCap 없음, 시도 %d/%d)", ticker, attempt + 1, retries)
+        except Exception as e:
+            logger.debug("%s info 조회 실패 (시도 %d/%d): %s", ticker, attempt + 1, retries, e)
+        if attempt < retries - 1:
+            time.sleep(1.5 * (attempt + 1))
+    return info
+
+
 def _get_batch_forward_eps(tickers: list) -> dict:
     """yahooquery 배치 earnings_trend. {ticker: (eps, end_date)} 반환.
 
@@ -423,7 +444,7 @@ def get_global_data() -> tuple:
                     fy_label = f"{str(_fy_year)[2:]}/12"
 
             else:
-                info     = yf.Ticker(ticker).info
+                info     = _get_ticker_info(ticker)
                 name     = info.get('shortName', ticker)
                 currency = info.get('currency', 'USD')
                 rate     = exchange_rates.get(currency, exchange_rates['USD'])
@@ -491,7 +512,7 @@ def get_global_data() -> tuple:
             logger.warning("%s 데이터 조회 오류: %s", ticker, e)
             return None
 
-    with ThreadPoolExecutor(max_workers=10) as ex:
+    with ThreadPoolExecutor(max_workers=6) as ex:
         raw_results = list(ex.map(_process_ticker, target_tickers))
 
     data_list       = []
