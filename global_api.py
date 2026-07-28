@@ -50,6 +50,11 @@ _cache_tickers: list | None = None
 _cache_time:    datetime | None = None
 _CACHE_TTL_MIN = 60
 
+# companiesmarketcap 스크래핑 시 함께 취득한 시가총액(USD). Yahoo Finance가
+# 아직 marketCap을 채워주지 못하는 신규 상장 종목 등의 fallback 소스로 사용.
+# {ticker_yf: mcap_usd}, get_global_top30_tickers()와 함께 60분 캐시 공유.
+_cache_mcap_usd: dict = {}
+
 _MONTH_STR_TO_NUM = {
     'January':1,'February':2,'March':3,'April':4,
     'May':5,'June':6,'July':7,'August':8,
@@ -65,7 +70,7 @@ def get_global_top30_tickers() -> list:
 
     60분 프로세스 캐시 적용. 실패 시 _FALLBACK_TICKERS 반환.
     """
-    global _cache_tickers, _cache_time
+    global _cache_tickers, _cache_time, _cache_mcap_usd
 
     if _cache_tickers and _cache_time:
         elapsed_min = (datetime.now() - _cache_time).total_seconds() / 60
@@ -80,7 +85,8 @@ def get_global_top30_tickers() -> list:
         soup = BeautifulSoup(r.text, 'html.parser')
         rows = soup.select('table tbody tr')
 
-        results = []
+        results  = []
+        mcap_usd = {}
         for row in rows:
             # 순위
             rank_td = row.select_one('td.rank-td')
@@ -102,6 +108,18 @@ def get_global_top30_tickers() -> list:
             ticker_yf = TICKER_MAP.get(ticker_raw, ticker_raw)
             results.append((rank, ticker_yf))
 
+            # 시가총액(USD): name-td 다음 td의 data-sort 속성 (원 단위 USD 정수).
+            # Yahoo Finance가 marketCap을 아직 채우지 못한 신규상장 종목 등의
+            # fallback으로 사용.
+            name_td = row.select_one('td.name-td')
+            if name_td:
+                mcap_td = name_td.find_next_sibling('td')
+                if mcap_td and mcap_td.get('data-sort'):
+                    try:
+                        mcap_usd[ticker_yf] = float(mcap_td['data-sort'])
+                    except ValueError:
+                        pass
+
         if not results:
             raise ValueError("파싱 결과 0건")
 
@@ -109,8 +127,9 @@ def get_global_top30_tickers() -> list:
         tickers = [t for _, t in results]
 
         logger.info("companiesmarketcap Top %d 티커 취득 완료", len(tickers))
-        _cache_tickers = tickers
-        _cache_time    = datetime.now()
+        _cache_tickers  = tickers
+        _cache_time     = datetime.now()
+        _cache_mcap_usd = mcap_usd
         return tickers
 
     except Exception as e:
@@ -300,8 +319,30 @@ def _get_ticker_info(ticker: str, retries: int = 3) -> dict:
         except Exception as e:
             logger.debug("%s info 조회 실패 (시도 %d/%d): %s", ticker, attempt + 1, retries, e)
         if attempt < retries - 1:
-            time.sleep(1.5 * (attempt + 1))
+            time.sleep(2.0 * (attempt + 1))
     return info
+
+
+def _get_fast_info(ticker: str, retries: int = 4) -> dict:
+    """yf.Ticker(ticker).fast_info를 재시도 로직과 함께 조회.
+
+    fast_info는 quoteSummary 전체 모듈(10여 개)을 묶어 요청하는 .info와 달리
+    가벼운 전용 엔드포인트를 사용해 Yahoo Finance 동시 요청 제한(429)에
+    걸릴 확률이 훨씬 낮다. marketCap/currency/price/shares는 랭킹에 필수인
+    핵심 필드이므로 이쪽을 우선 소스로 사용하고, .info는 기업명·forwardEps
+    같은 보조 필드에만 사용한다(실패해도 해당 행이 통째로 0이 되지 않도록).
+    """
+    for attempt in range(retries):
+        try:
+            fi = dict(yf.Ticker(ticker).fast_info)
+            if fi.get('marketCap') or fi.get('market_cap'):
+                return fi
+            logger.debug("%s fast_info 불완전 (marketCap 없음, 시도 %d/%d)", ticker, attempt + 1, retries)
+        except Exception as e:
+            logger.debug("%s fast_info 조회 실패 (시도 %d/%d): %s", ticker, attempt + 1, retries, e)
+        if attempt < retries - 1:
+            time.sleep(2.0 * (attempt + 1))
+    return {}
 
 
 def _get_batch_forward_eps(tickers: list) -> dict:
@@ -444,13 +485,36 @@ def get_global_data() -> tuple:
                     fy_label = f"{str(_fy_year)[2:]}/12"
 
             else:
-                info     = _get_ticker_info(ticker)
-                name     = info.get('shortName', ticker)
-                currency = info.get('currency', 'USD')
+                # marketCap/currency/price/shares는 랭킹에 필수인 핵심 필드.
+                # fast_info(가벼운 전용 엔드포인트)를 우선 사용해 Yahoo 동시요청
+                # 제한(429)에 덜 취약하게 하고, 실패 시에만 무거운 .info로 폴백한다.
+                fast    = _get_fast_info(ticker)
+                info    = {}
+                if not fast:
+                    info = _get_ticker_info(ticker)
+
+                currency = fast.get('currency') or info.get('currency', 'USD')
                 rate     = exchange_rates.get(currency, exchange_rates['USD'])
 
-                mcap_raw = info.get('marketCap', 0)
+                mcap_raw = fast.get('marketCap') or info.get('marketCap', 0)
                 mcap_t   = (mcap_raw * rate / 1_000_000_000_000) if mcap_raw else 0.0
+
+                # Yahoo Finance가 marketCap을 아직 채우지 못한 경우(예: 신규상장 직후)
+                # companiesmarketcap.com 스크래핑 시 취득한 시총(USD)으로 폴백.
+                if not mcap_t and ticker in _cache_mcap_usd:
+                    mcap_t = _cache_mcap_usd[ticker] * exchange_rates['USD'] / 1_000_000_000_000
+                    logger.info("%s marketCap Yahoo 미제공 — companiesmarketcap 값으로 폴백 (%.1f 조원)",
+                                ticker, mcap_t)
+
+                price  = fast.get('lastPrice') or info.get('currentPrice') or info.get('regularMarketPrice')
+                shares = fast.get('shares') or info.get('sharesOutstanding')
+
+                # 기업명/forwardEps 등 보조 필드는 무거운 .info가 필요하므로
+                # fast_info만으로 충분했던 경우에도 별도로 한 번 더 시도한다
+                # (실패해도 mcap_t는 이미 확보된 상태라 행이 0으로 빠지지 않음).
+                if not info:
+                    info = _get_ticker_info(ticker)
+                name = info.get('shortName', ticker)
 
                 # 배치 EPS 조회 → fallback 순서: yahooquery(non-None) → yfinance forwardEps
                 # _get_batch_forward_eps는 EPS 추정치가 있는 period만 저장하므로 t_eps는 항상 non-None.
@@ -473,8 +537,6 @@ def get_global_data() -> tuple:
                     # nextFiscalYearEnd와 forwardEps는 yfinance 내부에서 동일 FY를 가리킴.
                     t_eps = info.get('forwardEps')
 
-                price  = info.get('currentPrice') or info.get('regularMarketPrice')
-                shares = info.get('sharesOutstanding')
                 # FY/Mo는 EPS 출처와 동일한 회계연도를 반영해야 한다.
                 # yahooquery EPS 사용 시 → 해당 period endDate 기반 레이블 사용.
                 # yfinance EPS 사용 시 → yfinance nextFiscalYearEnd 기반 레이블 사용.
