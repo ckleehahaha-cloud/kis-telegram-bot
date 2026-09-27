@@ -143,8 +143,10 @@ python collector.py
 **환율**: ThreadPoolExecutor로 7개 동시 조회 (KRW, EUR, HKD, CHF, JPY, CNY, SAR). 실패 시 내장 기본값. SAR은 USD 확정 후 계산 (race condition 없음).
 **Forward EPS**: yahooquery `_get_batch_forward_eps()` 배치 우선, 없으면 yfinance `forwardEps` fallback. EPS 배율 3배 초과 시 통화 불일치로 판단해 yfinance fallback.
 **FY/Mo**: 비KS 종목은 `nextFiscalYearEnd` 타임스탬프 기반 `yy/mm`. KS 종목은 3월 31일 기준 `yy/12`.
-**한국 종목**: 시총은 네이버 금융(`_parse_market_sum` — `'874조\n4,858'` 형식 처리), 순이익은 네이버 컨센서스.
-**인코딩**: 네이버 금융 페이지는 UTF-8. `res.text` 사용 (`euc-kr` 디코딩 금지).
+**한국 종목**: 시총·순이익 모두 `m.stock.naver.com` 모바일 API 사용 (구 `finance.naver.com/item/main.naver`는 stock.naver.com Next.js 페이지로 리다이렉트되어 정적 HTML에 데이터 없음, 2026-09 확인).
+  - 시총: `/api/stock/{code}/integration` → `totalInfos[].marketValue`. `_parse_market_sum` — `'1,674조 9,588억'` 형식 처리.
+  - Forward 순이익: `/api/stock/{code}/finance/annual` → `trTitleList`에서 `isConsensus=="Y"`인 컬럼 key로 `rowList`의 `title=="당기순이익"` 행 값 조회. fy_label은 해당 컬럼 title(예: `'2026.12.'`)에서 추출.
+**인코딩**: 두 API 모두 JSON. `res.encoding = 'utf-8'` 명시 후 `res.json()` 사용 (기본 encoding 오탐 방지).
 **병렬 처리**: 환율 7개 동시 + yahooquery 배치 1회 + yfinance info 10 workers 동시 → 약 10~15초 소요 (이전 대비 ~10배 단축).
 **의존성**: `beautifulsoup4` 필수. `yahooquery` 설치 시 배치 EPS 조회 활성화 (미설치 시 yfinance fallback).
 
@@ -294,8 +296,8 @@ DART OpenAPI를 호출하는 순수 함수 모음. KIS API에 없는 데이터 �
   - 표시 범위: 마지막 날짜 기준 183일(약 6개월) 슬라이싱.
   - ±1σ 기준선으로 과매수/과매도 판단 참고 가능.
 - `/gl` · `/global` — 단축 `/gl` 추가. companiesmarketcap.com 파싱 실패 시 `_FALLBACK_TICKERS`(하드코딩 30개)로 자동 전환.
-  티커 리스트는 60분간 프로세스 캐시. 한국 종목 시총은 네이버 금융(`res.text`, UTF-8) 파싱.
-  `_market_sum` 태그 형식: `'874조\n4,858'` → `874 + 4858/10000 = 874.4858` 조원.
+  티커 리스트는 60분간 프로세스 캐시. 한국 종목 시총·순이익은 `m.stock.naver.com` 모바일 API(JSON) 사용.
+  `marketValue` 형식: `'1,674조 9,588억'` → `1674 + 9588/10000 = 1674.9588` 조원.
   한국 종목 표시명: `005930.KS` → `"Samsung Elec"`, `000660.KS` → `"SK Hynix"` (영문 고정).
   출력: 모노스페이스 코드 블록. 열: `#` / `Name`(15자) / `MCap` / `F.NI` / `FPER` / `FY/Mo`.
   FY/Mo: 비KS 종목 `nextFiscalYearEnd` 타임스탬프 → `yy/mm`. KS 종목 3/31 기준 `yy/12`.

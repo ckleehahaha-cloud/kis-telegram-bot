@@ -4,7 +4,6 @@ companiesmarketcap.com 스크래핑 + Yahoo Finance + 네이버 금융 기반.
 """
 
 import re
-import io
 import time
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -141,17 +140,20 @@ def get_global_top30_tickers() -> list:
 #  네이버 금융 (한국 종목 시총 / Forward 순이익)
 # ══════════════════════════════════════════════════════════════
 def get_naver_market_cap(code: str) -> float:
-    """네이버 금융에서 단일 종목 시가총액을 조 원 단위로 반환."""
-    url = f"https://finance.naver.com/item/main.naver?code={code}"
+    """네이버 증권(m.stock.naver.com) API에서 단일 종목 시가총액을 조 원 단위로 반환.
+
+    구 finance.naver.com/item/main.naver 페이지는 stock.naver.com(Next.js)으로
+    리다이렉트되어 정적 HTML에 시가총액이 없음 — m.stock.naver.com 모바일 API로 대체.
+    """
+    url = f"https://m.stock.naver.com/api/stock/{code}/integration"
     try:
         res = requests.get(url, headers=_HEADERS, timeout=5)
         res.raise_for_status()
-        text = res.text  # Content-Type: UTF-8
-
-        soup = BeautifulSoup(text, 'html.parser')
-        tag  = soup.find(id='_market_sum')
-        if tag:
-            return _parse_market_sum(tag.get_text())
+        res.encoding = 'utf-8'
+        data = res.json()
+        for item in data.get('totalInfos', []):
+            if item.get('code') == 'marketValue':
+                return _parse_market_sum(item.get('value', ''))
 
     except Exception as e:
         logger.warning("네이버 시가총액 조회 실패 %s: %s", code, e)
@@ -161,18 +163,21 @@ def get_naver_market_cap(code: str) -> float:
 
 
 def _parse_market_sum(raw: str) -> float:
-    """'874조\\n4,858' 형태 텍스트를 조 원(float)으로 변환.
+    """'1,674조 9,588억' 형태 텍스트를 조 원(float)으로 변환.
 
-    네이버 금융 _market_sum 태그: '조' 단위 정수 + 나머지 억원 분리 표기.
-    예: '874조\\n4,858' → 874 + 4858/10000 = 874.4858
+    m.stock.naver.com totalInfos.marketValue 형식: '조' 단위 + '억' 단위 분리 표기.
+    예: '1,674조 9,588억' → 1674 + 9588/10000 = 1674.9588
     """
-    m_jo = re.search(r'([\d,]+)\s*조', raw)
+    raw = raw.replace(',', '')
+    jo = ok = 0.0
+    m_jo = re.search(r'(\d+)\s*조', raw)
     if m_jo:
-        jo    = float(re.sub(r',', '', m_jo.group(1)))
-        after = raw[m_jo.end():]
-        m_ok  = re.search(r'([\d,]+)', after)
-        ok    = float(re.sub(r',', '', m_ok.group(1))) / 10000.0 if m_ok else 0.0
-        return round(jo + ok, 4)
+        jo = float(m_jo.group(1))
+    m_ok = re.search(r'(\d+)\s*억', raw)
+    if m_ok:
+        ok = float(m_ok.group(1))
+    if m_jo or m_ok:
+        return round(jo + ok / 10000.0, 4)
     digits = re.sub(r'[^\d]', '', raw)
     if digits:
         return float(digits) / 10000.0
@@ -185,41 +190,41 @@ def get_naver_market_cap_sum(codes: list) -> float:
 
 
 def get_korean_forward_net_income(ticker: str) -> tuple:
-    """네이버 금융에서 한국 주식의 Forward 순이익(컨센서스)을 조 원 단위로 반환.
+    """네이버 증권 연간 실적 API에서 한국 주식의 Forward 순이익(컨센서스)을 조 원 단위로 반환.
+
+    구 finance.naver.com 페이지의 실적 테이블(pandas.read_html)은 stock.naver.com
+    리다이렉트로 사라짐 — m.stock.naver.com/api/stock/{code}/finance/annual API로 대체.
+    trTitleList 중 isConsensus="Y" 컬럼(예: '2026.12.')의 '당기순이익' 행 값을 사용한다.
 
     Returns: (ni_조원: float | None, fy_label: str | None)
-    fy_label은 실제로 값을 읽어온 컬럼 헤더에서 추출한 'yy/12' 형식.
+    fy_label은 isConsensus="Y" 컬럼 title에서 추출한 'yy/12' 형식.
     """
     code = ticker.split('.')[0]
     try:
-        url = f"https://finance.naver.com/item/main.naver?code={code}"
+        url = f"https://m.stock.naver.com/api/stock/{code}/finance/annual"
         res = requests.get(url, headers=_HEADERS, timeout=5)
-        tables = pd.read_html(io.StringIO(res.text))
+        res.raise_for_status()
+        res.encoding = 'utf-8'
+        finance_info = res.json().get('financeInfo', {})
 
-        for tbl in tables:
-            if '당기순이익' in tbl.to_string():
-                cols = list(tbl.columns)
-                for row in tbl.to_records():
-                    if '당기순이익' in str(row[1]) and '지배주주' not in str(row[1]):
-                        # to_records()는 인덱스를 row[0]에 붙임.
-                        # row[5] → tbl.columns[4], row[4] → tbl.columns[3].
-                        col_idx = 4  # 기본: row[5]
-                        val = str(row[5]).replace(',', '').strip()
-                        if val in ['nan', '-', 'NaN', ''] or not any(c.isdigit() for c in val):
-                            col_idx = 3  # fallback: row[4]
-                            val = str(row[4]).replace(',', '').strip()
-                        try:
-                            ni = float(val) / 10000.0
-                            # 실제로 값을 읽어온 컬럼 헤더에서 연도 추출 → fy_label 생성.
-                            fy_label = None
-                            if col_idx < len(cols):
-                                m = re.search(r'(20\d{2})', str(cols[col_idx]))
-                                if m:
-                                    yr = int(m.group(1)) % 100
-                                    fy_label = f"{yr:02d}/12"
-                            return ni, fy_label
-                        except ValueError:
-                            return None, None
+        cons_key, fy_label = None, None
+        for tr in finance_info.get('trTitleList', []):
+            if tr.get('isConsensus') == 'Y':
+                cons_key = tr.get('key')
+                m = re.search(r'(\d{4})\.(\d{2})', tr.get('title', ''))
+                if m:
+                    fy_label = f"{m.group(1)[2:]}/{m.group(2)}"
+                break
+        if not cons_key:
+            return None, None
+
+        for row in finance_info.get('rowList', []):
+            if row.get('title') == '당기순이익':
+                val = str(row.get('columns', {}).get(cons_key, {}).get('value', ''))
+                val = val.replace(',', '').strip()
+                if val and val not in ('-', 'nan', 'NaN') and any(c.isdigit() for c in val):
+                    return float(val) / 10000.0, fy_label
+                break
     except Exception as e:
         logger.debug("네이버 Forward 순이익 크롤링 실패 %s: %s", ticker, e)
     return None, None
